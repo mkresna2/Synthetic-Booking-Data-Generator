@@ -242,6 +242,7 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                         if is_member:
                             member_discount = member_discount_pct / 100.0
                             booked_rate = booked_rate * (1 - member_discount)
+                            rate_plan = f"{rate_plan} + Member"
 
                         booked_rate = round(booked_rate * np.random.uniform(0.95, 1.05), 2)
                         num_guests  = np.random.randint(1, 4)
