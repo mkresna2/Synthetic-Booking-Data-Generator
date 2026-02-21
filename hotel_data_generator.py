@@ -94,7 +94,6 @@ for room_type, defaults in default_rooms.items():
         room_configs[room_type] = {"total": count, "base_rate": base_rate}
 
 total_rooms = sum(v["total"] for v in room_configs.values())
-st.sidebar.metric("Total Rooms", total_rooms)
 
 # --- Rate Plans ---
 st.sidebar.subheader("💰 Rate Plans")
@@ -119,13 +118,6 @@ summary_cols[0].metric("Booking Window", f"{booking_start} → {booking_end}")
 summary_cols[1].metric("Stay Window", f"{checkin_start} → {checkin_end}")
 summary_cols[2].metric("Occupancy Range", f"{occ_min}% – {occ_max}%")
 summary_cols[3].metric("Total Rooms", total_rooms)
-
-st.markdown("**Room Type Details**")
-room_df_preview = pd.DataFrame([
-    {"Room Type": rt, "Rooms": cfg["total"], "Base Rate (IDR)": f"{cfg['base_rate']:,.0f}"}
-    for rt, cfg in room_configs.items()
-])
-st.dataframe(room_df_preview, use_container_width=True, hide_index=True)
 
 st.markdown("**Rate Plan Discounts**")
 rp_df = pd.DataFrame([
@@ -223,42 +215,6 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
 
         bookings_df = pd.DataFrame(bookings_data)
 
-        # --- Room Inventory ---
-        inv_data = []
-        d = checkin_start_dt
-        while d <= checkin_end_dt:
-            for room_type, details in room_configs.items():
-                total    = details["total"]
-                occupied = min(occupancy_tracker.get(d, {}).get(room_type, 0), total)
-                inv_data.append({
-                    "Date":            d.strftime("%Y-%m-%d"),
-                    "Room_Type":       room_type,
-                    "Total_Rooms":     total,
-                    "Rooms_Available": total - occupied,
-                    "Rooms_Occupied":  occupied,
-                })
-            d += timedelta(days=1)
-        inv_df = pd.DataFrame(inv_data)
-
-        # --- Daily Rates ---
-        rates_data = []
-        d = checkin_start_dt
-        while d <= checkin_end_dt:
-            for room_type, details in room_configs.items():
-                base  = details["base_rate"]
-                adj   = round(np.random.uniform(-0.1, 0.2) * base, 2)
-                promo = np.random.choice(["None", "Early Bird", "Weekend Deal"], p=[0.7, 0.15, 0.15])
-                rates_data.append({
-                    "Date":               d.strftime("%Y-%m-%d"),
-                    "Room_Type":          room_type,
-                    "Base_Rate":          base,
-                    "Dynamic_Adjustment": adj,
-                    "Final_Rate":         base + adj,
-                    "Promotion_Applied":  promo,
-                })
-            d += timedelta(days=1)
-        rates_df = pd.DataFrame(rates_data)
-
         # --- Market Data ---
         market_data = []
         d = checkin_start_dt
@@ -277,7 +233,7 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
     # ── Results ───────────────────────────────────────────────────────────────
     st.success(f"✅ Generated **{len(bookings_df):,}** bookings successfully!")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Bookings", "🏠 Room Inventory", "💲 Daily Rates", "📈 Market Data"])
+    tab1, tab2 = st.tabs(["📋 Bookings", "📈 Market Data"])
 
     with tab1:
         st.dataframe(bookings_df.head(500), use_container_width=True)
@@ -292,19 +248,6 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
         c4.metric("Avg. Nightly Rate (IDR)", f"{confirmed['Booked_Rate'].mean():,.0f}")
 
     with tab2:
-        st.dataframe(inv_df.head(500), use_container_width=True)
-        avg_occ = inv_df.groupby("Room_Type").apply(
-            lambda x: (x["Rooms_Occupied"] / x["Total_Rooms"]).mean() * 100
-        ).reset_index()
-        avg_occ.columns = ["Room Type", "Avg Occupancy (%)"]
-        avg_occ["Avg Occupancy (%)"] = avg_occ["Avg Occupancy (%)"].round(1)
-        st.markdown("**Average Occupancy by Room Type**")
-        st.dataframe(avg_occ, use_container_width=True, hide_index=True)
-
-    with tab3:
-        st.dataframe(rates_df.head(500), use_container_width=True)
-
-    with tab4:
         st.dataframe(market_df.head(500), use_container_width=True)
 
     # ── Download ZIP ──────────────────────────────────────────────────────────
@@ -314,8 +257,6 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, df in [
             ("Bookings.csv", bookings_df),
-            ("Room_Inventory.csv", inv_df),
-            ("Daily_Rates.csv", rates_df),
             ("Market_Data.csv", market_df),
         ]:
             csv_bytes = df.to_csv(index=False).encode("utf-8")
@@ -331,11 +272,9 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
     )
 
     # Individual downloads
-    dl_cols = st.columns(4)
+    dl_cols = st.columns(2)
     for col, (name, df) in zip(dl_cols, [
         ("Bookings.csv", bookings_df),
-        ("Room_Inventory.csv", inv_df),
-        ("Daily_Rates.csv", rates_df),
         ("Market_Data.csv", market_df),
     ]):
         col.download_button(
