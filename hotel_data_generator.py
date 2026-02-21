@@ -8,44 +8,39 @@ from PIL import Image
 
 st.set_page_config(page_title="Hotel Data Generator", page_icon="🏨", layout="wide")
 
-# Logo before title: small fixed height, same line as title, vertically aligned
+# Logo + title as single flex row (avoids Streamlit column nesting issues)
 LOGO_HEIGHT_PX = 32
 LOGO_PATHS = [
     "assets/logo.png",
     "assets/c__Users_Admin_AppData_Roaming_Cursor_User_workspaceStorage_d1f65b9bb090c9b847509a16beec05d6_images_image-38435030-6bff-40b3-b9a8-6bc4f5f61f8a.png",
     "assets/c__Users_Admin_AppData_Roaming_Cursor_User_workspaceStorage_d1f65b9bb090c9b847509a16beec05d6_images_transparent-logo-small-d023fea0-1b14-4c62-b5aa-2e592d189786.png",
 ]
-# Align logo and title on the same horizontal line (vertical center in the row)
-st.markdown("""
-<style>
-    /* First row of columns: center logo and title on same baseline */
-    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-        display: flex !important;
-        align-items: center !important;
-    }
-</style>
-""", unsafe_allow_html=True)
-logo_col, title_col = st.columns([1, 8])
-with logo_col:
-    logo_loaded = False
-    for path in LOGO_PATHS:
-        try:
-            img = Image.open(path)
-            img.load()
-            if img.mode == "RGBA":
-                img = img.convert("RGBA")
-            aspect = img.width / img.height
-            w = int(LOGO_HEIGHT_PX * aspect)
-            h = LOGO_HEIGHT_PX
-            img = img.resize((w, h), Image.Resampling.LANCZOS)
-            st.image(img, width=w)
-            logo_loaded = True
-            break
-        except (FileNotFoundError, OSError):
-            continue
-    if not logo_loaded:
-        st.write("")
-with title_col:
+logo_b64 = None
+logo_width = 32
+for path in LOGO_PATHS:
+    try:
+        from PIL import Image
+        import base64
+        img = Image.open(path)
+        if img.mode == "RGBA":
+            img = img.convert("RGBA")
+        aspect = img.width / img.height
+        logo_width = int(LOGO_HEIGHT_PX * aspect)
+        img = img.resize((logo_width, LOGO_HEIGHT_PX), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        logo_b64 = base64.b64encode(buf.getvalue()).decode()
+        break
+    except (FileNotFoundError, OSError):
+        continue
+if logo_b64:
+    st.markdown(f"""
+    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 1rem;">
+        <img src="data:image/png;base64,{logo_b64}" width="{logo_width}" height="{LOGO_HEIGHT_PX}" style="display: block;">
+        <h1 style="margin: 0; font-size: 2rem; font-weight: 600;">Hotel Data Generator</h1>
+    </div>
+    """, unsafe_allow_html=True)
+else:
     st.title("Hotel Data Generator")
 st.markdown("Configure your hotel parameters below and generate synthetic booking data for analysis.")
 
