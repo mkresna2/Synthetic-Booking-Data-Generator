@@ -179,6 +179,43 @@ rate_plans = list(rate_plan_discounts.keys()) + ["Corporate"]
 # --- Booking Channels ---
 booking_channels = ["Website", "OTA", "Direct", "Walk-in"]
 
+# --- Stay Duration Distribution ---
+st.sidebar.subheader("🌙 Stay Duration Distribution")
+st.sidebar.caption("💡 Business hotels: 1-2 nights common | Resorts (Bali): 3-5 nights common")
+
+duration_preset = st.sidebar.selectbox(
+    "Duration Pattern",
+    ["Business Hotel (1-2 nights common)", "Resort/Vacation (3-5 nights common)", "Balanced (Uniform)", "Custom"],
+    index=0,
+    help="Select a preset or choose 'Custom' to define your own distribution"
+)
+
+# Default weights (Business Hotel pattern)
+if duration_preset == "Business Hotel (1-2 nights common)":
+    night_weights = [35, 30, 15, 10, 7, 2, 1]  # 1-7 nights
+elif duration_preset == "Resort/Vacation (3-5 nights common)":
+    night_weights = [10, 15, 25, 25, 15, 7, 3]  # 1-7 nights
+elif duration_preset == "Balanced (Uniform)":
+    night_weights = [14, 14, 14, 14, 14, 15, 15]  # roughly uniform
+else:  # Custom
+    st.sidebar.markdown("**Custom Weights (1-7 nights)**")
+    w1 = st.sidebar.slider("1 night weight", 0, 50, 35, key="w1")
+    w2 = st.sidebar.slider("2 nights weight", 0, 50, 30, key="w2")
+    w3 = st.sidebar.slider("3 nights weight", 0, 50, 15, key="w3")
+    w4 = st.sidebar.slider("4 nights weight", 0, 50, 10, key="w4")
+    w5 = st.sidebar.slider("5 nights weight", 0, 50, 7, key="w5")
+    w6 = st.sidebar.slider("6 nights weight", 0, 50, 2, key="w6")
+    w7 = st.sidebar.slider("7 nights weight", 0, 50, 1, key="w7")
+    night_weights = [w1, w2, w3, w4, w5, w6, w7]
+
+# Normalize weights to sum to 1
+night_weights = [w / sum(night_weights) for w in night_weights]
+
+# Show distribution preview
+st.sidebar.markdown("**Expected Distribution:**")
+for i, pct in enumerate(night_weights, 1):
+    st.sidebar.progress(pct, text=f"{i} night{'s' if i > 1 else ''}: {pct*100:.1f}%")
+
 # ── Main Area: Preview & Generate ────────────────────────────────────────────
 st.subheader("📊 Configuration Summary")
 
@@ -238,7 +275,7 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                     book_date = min(book_date, booking_end_dt)
 
                     checkin_date  = d
-                    num_nights    = np.random.randint(1, 8)
+                    num_nights    = np.random.choice([1, 2, 3, 4, 5, 6, 7], p=night_weights)
                     checkout_date = checkin_date + timedelta(days=num_nights)
 
                     if checkout_date <= checkin_end_dt:
