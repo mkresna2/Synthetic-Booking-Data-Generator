@@ -4,22 +4,38 @@ import numpy as np
 from datetime import datetime, timedelta
 import io
 import zipfile
+from PIL import Image
 
 st.set_page_config(page_title="Hotel Data Generator", page_icon="🏨", layout="wide")
 
-# Logo at top of main area
+# Logo before title, resized to match title height (~36px)
+TITLE_HEIGHT_PX = 36
 LOGO_PATHS = [
     "assets/logo.png",
     "assets/c__Users_Admin_AppData_Roaming_Cursor_User_workspaceStorage_d1f65b9bb090c9b847509a16beec05d6_images_transparent-logo-small-d023fea0-1b14-4c62-b5aa-2e592d189786.png",
 ]
-for path in LOGO_PATHS:
-    try:
-        st.image(path, width=200)
-        break
-    except FileNotFoundError:
-        continue
-
-st.title("🏨 Hotel Data Generator")
+logo_col, title_col = st.columns([1, 8])
+with logo_col:
+    logo_loaded = False
+    for path in LOGO_PATHS:
+        try:
+            img = Image.open(path)
+            img.load()
+            if img.mode == "RGBA":
+                img = img.convert("RGBA")
+            aspect = img.width / img.height
+            w = int(TITLE_HEIGHT_PX * aspect)
+            h = TITLE_HEIGHT_PX
+            img = img.resize((w, h), Image.Resampling.LANCZOS)
+            st.image(img, use_container_width=True)
+            logo_loaded = True
+            break
+        except (FileNotFoundError, OSError):
+            continue
+    if not logo_loaded:
+        st.write("")
+with title_col:
+    st.title("Hotel Data Generator")
 st.markdown("Configure your hotel parameters below and generate synthetic booking data for analysis.")
 
 # ── Sidebar Configuration ────────────────────────────────────────────────────
