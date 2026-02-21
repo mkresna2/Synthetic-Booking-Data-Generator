@@ -91,7 +91,46 @@ for room_type, defaults in default_rooms.items():
         count = st.number_input(f"Number of {room_type} Rooms", 1, 500, defaults["count"], key=f"cnt_{room_type}")
         base_rate = st.number_input(f"Base Rate (IDR)", 100000, 10000000, defaults["base_rate"],
                                     step=50000, key=f"rate_{room_type}")
+        st.caption(f"Base Rate: **IDR {base_rate:,.0f}**")
         room_configs[room_type] = {"total": count, "base_rate": base_rate}
+
+# --- Custom Room Types ---
+st.sidebar.markdown("---")
+if "custom_rooms" not in st.session_state:
+    st.session_state.custom_rooms = {}
+
+with st.sidebar.expander("➕ Add Custom Room Type", expanded=False):
+    new_room_name = st.text_input("Room Type Name", placeholder="e.g., Presidential", key="new_room_name")
+    new_room_count = st.number_input("Number of Rooms", 1, 500, 5, key="new_room_count")
+    new_room_rate = st.number_input("Base Rate (IDR)", 100000, 50000000, 5000000, step=100000, key="new_room_rate")
+    st.caption(f"Base Rate: **IDR {new_room_rate:,.0f}**")
+
+    if st.button("Add Room Type", use_container_width=True):
+        if new_room_name and new_room_name not in default_rooms and new_room_name not in st.session_state.custom_rooms:
+            st.session_state.custom_rooms[new_room_name] = {"count": new_room_count, "base_rate": new_room_rate}
+            st.success(f"Added {new_room_name}!")
+        elif not new_room_name:
+            st.error("Please enter a room type name.")
+        else:
+            st.error("Room type name already exists.")
+
+# Display and allow editing of custom room types
+if st.session_state.custom_rooms:
+    st.sidebar.markdown("**Custom Room Types:**")
+    for room_name in list(st.session_state.custom_rooms.keys()):
+        with st.sidebar.expander(f"{room_name} Rooms", expanded=True):
+            custom = st.session_state.custom_rooms[room_name]
+            count = st.number_input(f"Number of {room_name} Rooms", 1, 500, custom["count"], key=f"cnt_{room_name}")
+            base_rate = st.number_input(f"Base Rate (IDR)", 100000, 50000000, custom["base_rate"],
+                                        step=100000, key=f"rate_{room_name}")
+            st.caption(f"Base Rate: **IDR {base_rate:,.0f}**")
+            st.session_state.custom_rooms[room_name]["count"] = count
+            st.session_state.custom_rooms[room_name]["base_rate"] = base_rate
+            room_configs[room_name] = {"total": count, "base_rate": base_rate}
+
+            if st.button(f"Remove {room_name}", key=f"remove_{room_name}"):
+                del st.session_state.custom_rooms[room_name]
+                st.rerun()
 
 total_rooms = sum(v["total"] for v in room_configs.values())
 
