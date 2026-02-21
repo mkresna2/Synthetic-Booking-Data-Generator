@@ -100,7 +100,7 @@ st.sidebar.metric("Total Rooms", total_rooms)
 st.sidebar.subheader("💰 Rate Plans")
 st.sidebar.markdown("Set discount (%) from Base Rate per plan.")
 
-rate_plan_defaults = {"BAR": 0, "Non-Refundable": 10, "Corporate": 15, "Promotion": 20}
+rate_plan_defaults = {"BAR": 0, "Non-Refundable": 10, "Corporate": 15, "Promotion": 20, "Early Bird": 15}
 rate_plan_discounts = {}
 for plan, default_disc in rate_plan_defaults.items():
     disc = st.sidebar.number_input(f"{plan} discount (%)", 0, 80, default_disc, key=f"disc_{plan}")
@@ -181,9 +181,15 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                     checkout_date = checkin_date + timedelta(days=num_nights)
 
                     if checkout_date <= checkin_end_dt:
-                        base_rate   = details["base_rate"]
-                        rate_plan   = np.random.choice(rate_plans)
-                        discount    = rate_plan_discounts[rate_plan]
+                        base_rate = details["base_rate"]
+                        # Apply Early Bird discount for bookings >30 days in advance
+                        days_advance = (checkin_date - book_date).days
+                        if days_advance > 30:
+                            rate_plan = "Early Bird"
+                        else:
+                            other_plans = [p for p in rate_plans if p != "Early Bird"]
+                            rate_plan = np.random.choice(other_plans)
+                        discount = rate_plan_discounts[rate_plan]
                         booked_rate = round(base_rate * (1 - discount) * np.random.uniform(0.95, 1.05), 2)
                         num_guests  = np.random.randint(1, 4)
                         channel     = np.random.choice(booking_channels)
