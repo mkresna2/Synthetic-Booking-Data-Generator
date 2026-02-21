@@ -7,6 +7,18 @@ import zipfile
 
 st.set_page_config(page_title="Hotel Data Generator", page_icon="🏨", layout="wide")
 
+# Logo at top of main area
+LOGO_PATHS = [
+    "assets/logo.png",
+    "assets/c__Users_Admin_AppData_Roaming_Cursor_User_workspaceStorage_d1f65b9bb090c9b847509a16beec05d6_images_transparent-logo-small-d023fea0-1b14-4c62-b5aa-2e592d189786.png",
+]
+for path in LOGO_PATHS:
+    try:
+        st.image(path, width=200)
+        break
+    except FileNotFoundError:
+        continue
+
 st.title("🏨 Hotel Data Generator")
 st.markdown("Configure your hotel parameters below and generate synthetic booking data for analysis.")
 
