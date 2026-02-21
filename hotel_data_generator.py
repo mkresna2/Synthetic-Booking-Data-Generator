@@ -151,6 +151,29 @@ corporate_discount_idr = st.sidebar.number_input("Corporate Discount (IDR)", 0, 
 st.sidebar.markdown("**Member Discount (Stacking %)**")
 member_discount_pct = st.sidebar.number_input("Member Discount (%)", 0, 50, 10, key="disc_member_pct")
 
+with st.sidebar.expander("ℹ️ How Discounts & Channels Work", expanded=False):
+    st.markdown("""
+    **Member Discount Assignment:**
+    - Applied to ~30% of bookings randomly
+    - Stacks on top of existing rate plan discounts
+    - Rate plan column shows "+ Member" suffix
+
+    **Booking Channel by Member Status:**
+
+    | Channel | Members | Non-Members |
+    |---------|---------|-------------|
+    | Direct | 45% | 20% |
+    | Website | 35% | 30% |
+    | OTA | 15% | 40% |
+    | Walk-in | 5% | 10% |
+
+    *Members prefer booking directly; non-members use OTAs more.*
+
+    **Corporate Discount:**
+    - Fixed IDR amount subtracted from base rate
+    - Applied instead of percentage discounts
+    """)
+
 rate_plans = list(rate_plan_discounts.keys()) + ["Corporate"]
 
 # --- Booking Channels ---
@@ -243,10 +266,20 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                             member_discount = member_discount_pct / 100.0
                             booked_rate = booked_rate * (1 - member_discount)
                             rate_plan = f"{rate_plan} + Member"
+                            # Members prefer Direct and Website channels
+                            channel = np.random.choice(
+                                ["Direct", "Website", "OTA", "Walk-in"],
+                                p=[0.45, 0.35, 0.15, 0.05]
+                            )
+                        else:
+                            # Non-members prefer OTA and Website channels
+                            channel = np.random.choice(
+                                ["OTA", "Website", "Direct", "Walk-in"],
+                                p=[0.40, 0.30, 0.20, 0.10]
+                            )
 
                         booked_rate = round(booked_rate * np.random.uniform(0.95, 1.05), 2)
                         num_guests  = np.random.randint(1, 4)
-                        channel     = np.random.choice(booking_channels)
                         status      = np.random.choice(["Confirmed", "Cancelled"], p=[0.9, 0.1])
                         revenue     = booked_rate * num_nights if status == "Confirmed" else 0
 
