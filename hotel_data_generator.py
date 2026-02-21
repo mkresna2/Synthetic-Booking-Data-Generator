@@ -8,13 +8,23 @@ from PIL import Image
 
 st.set_page_config(page_title="Hotel Data Generator", page_icon="🏨", layout="wide")
 
-# Logo before title: small fixed height, displayed at native size so it stays crisp (no stretch)
+# Logo before title: small fixed height, same line as title, vertically aligned
 LOGO_HEIGHT_PX = 32
 LOGO_PATHS = [
     "assets/logo.png",
     "assets/c__Users_Admin_AppData_Roaming_Cursor_User_workspaceStorage_d1f65b9bb090c9b847509a16beec05d6_images_image-38435030-6bff-40b3-b9a8-6bc4f5f61f8a.png",
     "assets/c__Users_Admin_AppData_Roaming_Cursor_User_workspaceStorage_d1f65b9bb090c9b847509a16beec05d6_images_transparent-logo-small-d023fea0-1b14-4c62-b5aa-2e592d189786.png",
 ]
+# Align logo and title on the same horizontal line (vertical center in the row)
+st.markdown("""
+<style>
+    /* First row of columns: center logo and title on same baseline */
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+        display: flex !important;
+        align-items: center !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 logo_col, title_col = st.columns([1, 8])
 with logo_col:
     logo_loaded = False
@@ -28,7 +38,6 @@ with logo_col:
             w = int(LOGO_HEIGHT_PX * aspect)
             h = LOGO_HEIGHT_PX
             img = img.resize((w, h), Image.Resampling.LANCZOS)
-            # Display at native pixel size (no use_container_width) so it stays crisp on desktop
             st.image(img, width=w)
             logo_loaded = True
             break
