@@ -275,7 +275,7 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                     book_date = min(book_date, booking_end_dt)
 
                     checkin_date  = d
-                    num_nights    = np.random.choice([1, 2, 3, 4, 5, 6, 7], p=night_weights)
+                    num_nights    = int(np.random.choice([1, 2, 3, 4, 5, 6, 7], p=night_weights))
                     checkout_date = checkin_date + timedelta(days=num_nights)
 
                     if checkout_date <= checkin_end_dt:
