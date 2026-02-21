@@ -138,13 +138,20 @@ total_rooms = sum(v["total"] for v in room_configs.values())
 st.sidebar.subheader("💰 Rate Plans")
 st.sidebar.markdown("Set discount (%) from Base Rate per plan.")
 
-rate_plan_defaults = {"BAR": 0, "Non-Refundable": 10, "Corporate": 15, "Early Bird (> 30 days)": 15}
+rate_plan_defaults = {"BAR": 0, "Non-Refundable": 10, "Early Bird (> 30 days)": 15}
 rate_plan_discounts = {}
 for plan, default_disc in rate_plan_defaults.items():
     disc = st.sidebar.number_input(f"{plan} discount (%)", 0, 80, default_disc, key=f"disc_{plan}")
     rate_plan_discounts[plan] = disc / 100.0
 
-rate_plans = list(rate_plan_discounts.keys())
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Corporate Discount (Fixed IDR Value)**")
+corporate_discount_idr = st.sidebar.number_input("Corporate Discount (IDR)", 0, 5000000, 150000, step=10000, key="disc_corporate_idr")
+
+st.sidebar.markdown("**Member Discount (Stacking %)**")
+member_discount_pct = st.sidebar.number_input("Member Discount (%)", 0, 50, 10, key="disc_member_pct")
+
+rate_plans = list(rate_plan_discounts.keys()) + ["Corporate"]
 
 # --- Booking Channels ---
 booking_channels = ["Website", "OTA", "Direct", "Walk-in"]
@@ -159,10 +166,10 @@ summary_cols[2].metric("Occupancy Range", f"{occ_min}% – {occ_max}%")
 summary_cols[3].metric("Total Rooms", total_rooms)
 
 st.markdown("**Rate Plan Discounts**")
-rp_df = pd.DataFrame([
-    {"Rate Plan": plan, "Discount (%)": f"{disc*100:.0f}%"}
-    for plan, disc in rate_plan_discounts.items()
-])
+rp_data = [{"Rate Plan": plan, "Discount": f"{disc*100:.0f}%"} for plan, disc in rate_plan_discounts.items()]
+rp_data.append({"Rate Plan": "Corporate", "Discount": f"IDR {corporate_discount_idr:,.0f}"})
+rp_data.append({"Rate Plan": "Member Discount", "Discount": f"{member_discount_pct:.0f}% (stacking)"})
+rp_df = pd.DataFrame(rp_data)
 st.dataframe(rp_df, use_container_width=True, hide_index=True)
 
 # ── Generate Button ───────────────────────────────────────────────────────────
@@ -220,8 +227,23 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                         else:
                             other_plans = [p for p in rate_plans if p != "Early Bird (> 30 days)"]
                             rate_plan = np.random.choice(other_plans)
-                        discount = rate_plan_discounts[rate_plan]
-                        booked_rate = round(base_rate * (1 - discount) * np.random.uniform(0.95, 1.05), 2)
+
+                        # Calculate rate based on rate plan type
+                        if rate_plan == "Corporate":
+                            # Corporate: fixed IDR discount
+                            booked_rate = base_rate - corporate_discount_idr
+                        else:
+                            # BAR, Non-Refundable, Early Bird: percentage discount
+                            discount = rate_plan_discounts.get(rate_plan, 0)
+                            booked_rate = base_rate * (1 - discount)
+
+                        # Member Discount: stacks after other discounts (apply to 30% of bookings)
+                        is_member = np.random.random() < 0.3
+                        if is_member:
+                            member_discount = member_discount_pct / 100.0
+                            booked_rate = booked_rate * (1 - member_discount)
+
+                        booked_rate = round(booked_rate * np.random.uniform(0.95, 1.05), 2)
                         num_guests  = np.random.randint(1, 4)
                         channel     = np.random.choice(booking_channels)
                         status      = np.random.choice(["Confirmed", "Cancelled"], p=[0.9, 0.1])
