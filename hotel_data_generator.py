@@ -6,6 +6,49 @@ import io
 import zipfile
 from PIL import Image
 
+
+def get_occupancy_for_date(checkin_date, today, tier_ranges, fallback_min=50, fallback_max=80):
+    """
+    Calculate target occupancy percentage for a given check-in date based on
+    seasonal/progressive tiers. Higher occupancy for near-term dates,
+    decreasing for distant future dates.
+
+    Tiers:
+    - Tier 1: Current month + next 3 months (High occupancy)
+    - Tier 2: Months 4-6 from now (Medium occupancy)
+    - Tier 3: Months 7-9 from now (Lower occupancy)
+    - Tier 4: Months 10-12 from now (Lowest occupancy)
+    - Past dates: Use Tier 1 ranges
+    - Beyond 12 months: Use Tier 4 ranges
+    """
+    if tier_ranges is None:
+        # Fallback to fixed range if tier_ranges not provided
+        return np.random.uniform(fallback_min / 100, fallback_max / 100)
+
+    # Calculate months difference from today
+    months_diff = (checkin_date.year - today.year) * 12 + (checkin_date.month - today.month)
+
+    # Determine which tier to use
+    if months_diff < 0:
+        # Past dates - use Tier 1 (high occupancy as they're "certain")
+        tier = 1
+    elif months_diff <= 3:
+        # Current month + next 3 months
+        tier = 1
+    elif months_diff <= 6:
+        # Months 4-6
+        tier = 2
+    elif months_diff <= 9:
+        # Months 7-9
+        tier = 3
+    else:
+        # Months 10+ (including beyond 12 months)
+        tier = 4
+
+    tier_min, tier_max = tier_ranges[tier]
+    return np.random.uniform(tier_min / 100, tier_max / 100)
+
+
 st.set_page_config(page_title="Hotel Data Generator", page_icon="🏨", layout="wide")
 
 # Logo + title as single flex row (avoids Streamlit column nesting issues)
@@ -54,7 +97,7 @@ col1, col2 = st.sidebar.columns(2)
 with col1:
     booking_start = st.date_input("Booking Start", value=datetime(2024, 1, 1), key="bs")
 with col2:
-    booking_end = st.date_input("Booking End", value=datetime(2024, 12, 31), key="be")
+    booking_end = st.date_input("Booking End", value=datetime.today(), key="be")
 
 col3, col4 = st.sidebar.columns(2)
 with col3:
@@ -69,12 +112,42 @@ if checkin_start >= checkin_end:
 
 # --- Occupancy ---
 st.sidebar.subheader("🛏️ Occupancy Settings")
-occ_mode = st.sidebar.radio("Occupancy Mode", ["Fixed Range", "Random"], horizontal=True)
-if occ_mode == "Fixed Range":
+occ_mode = st.sidebar.radio("Occupancy Mode", ["Seasonal/Progressive", "Fixed Range", "Random"], horizontal=True, index=0)
+
+if occ_mode == "Seasonal/Progressive":
+    st.sidebar.caption("Higher occupancy for near-term dates, decreasing for distant future")
+
+    with st.sidebar.expander("📊 Configure Occupancy Tiers", expanded=True):
+        st.markdown("**Tier 1: Current month + next 3 months** (High)")
+        tier1_min, tier1_max = st.slider("Tier 1 Range (%)", 50, 100, (75, 90), step=5, key="tier1")
+
+        st.markdown("**Tier 2: Months 4-6 from now** (Medium)")
+        tier2_min, tier2_max = st.slider("Tier 2 Range (%)", 30, 90, (55, 75), step=5, key="tier2")
+
+        st.markdown("**Tier 3: Months 7-9 from now** (Lower)")
+        tier3_min, tier3_max = st.slider("Tier 3 Range (%)", 20, 70, (40, 60), step=5, key="tier3")
+
+        st.markdown("**Tier 4: Months 10-12 from now** (Lowest)")
+        tier4_min, tier4_max = st.slider("Tier 4 Range (%)", 10, 60, (25, 45), step=5, key="tier4")
+
+    # Store tier ranges for use in generation
+    tier_ranges = {
+        1: (tier1_min, tier1_max),
+        2: (tier2_min, tier2_max),
+        3: (tier3_min, tier3_max),
+        4: (tier4_min, tier4_max),
+    }
+
+    # For backward compatibility in summary display
+    occ_min, occ_max = tier4_min, tier1_max
+
+elif occ_mode == "Fixed Range":
     occ_min, occ_max = st.sidebar.slider("Occupancy Range (%)", 10, 100, (50, 80), step=5)
+    tier_ranges = None
 else:
     st.sidebar.info("Occupancy will be randomly generated between 50–95% each day.")
     occ_min, occ_max = 50, 95
+    tier_ranges = None
 
 # --- Room Types ---
 st.sidebar.subheader("🏠 Room Types")
@@ -222,8 +295,18 @@ st.subheader("📊 Configuration Summary")
 summary_cols = st.columns(4)
 summary_cols[0].metric("Booking Window", f"{booking_start} → {booking_end}")
 summary_cols[1].metric("Stay Window", f"{checkin_start} → {checkin_end}")
-summary_cols[2].metric("Occupancy Range", f"{occ_min}% – {occ_max}%")
+
+if occ_mode == "Seasonal/Progressive" and tier_ranges:
+    # Show seasonal occupancy with tiered ranges
+    summary_cols[2].metric("Occupancy", "Seasonal", f"{tier_ranges[4][0]}% – {tier_ranges[1][1]}%")
+else:
+    summary_cols[2].metric("Occupancy Range", f"{occ_min}% – {occ_max}%")
+
 summary_cols[3].metric("Total Rooms", total_rooms)
+
+# Show tiered occupancy details for Seasonal mode
+if occ_mode == "Seasonal/Progressive" and tier_ranges:
+    st.caption(f"**Seasonal Occupancy Tiers:** Now-3mo: {tier_ranges[1][0]}-{tier_ranges[1][1]}% | 4-6mo: {tier_ranges[2][0]}-{tier_ranges[2][1]}% | 7-9mo: {tier_ranges[3][0]}-{tier_ranges[3][1]}% | 10mo+: {tier_ranges[4][0]}-{tier_ranges[4][1]}%")
 
 st.markdown("**Rate Plan Discounts**")
 rp_data = [{"Rate Plan": plan, "Discount": f"{disc*100:.0f}%"} for plan, disc in rate_plan_discounts.items()]
@@ -253,11 +336,14 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
         bookings_data = []
         booking_counter = 1
 
+        # Get today's date for seasonal occupancy calculation
+        today_dt = datetime.today()
+
         d = checkin_start_dt
         while d <= checkin_end_dt:
             for room_type, details in room_configs.items():
                 total = details["total"]
-                target_pct = np.random.uniform(occ_min / 100, occ_max / 100)
+                target_pct = get_occupancy_for_date(d, today_dt, tier_ranges, occ_min, occ_max)
                 target_occupied = int(total * target_pct)
                 current_occupied = occupancy_tracker[d][room_type]
                 rooms_needed = max(0, target_occupied - current_occupied)
