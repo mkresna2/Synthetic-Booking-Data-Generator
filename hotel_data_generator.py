@@ -78,39 +78,27 @@ def sample_advance_days(
     booking_year_counts,
     total_assigned_bookings,
 ):
-    valid_options = []
-    valid_weights = []
-    valid_bucket_indices = []
-
-    total_sampled = sum(lead_time_bucket_counts)
-
-    for index, (_, bucket_min, bucket_max) in enumerate(LEAD_TIME_BUCKETS):
-        effective_min = max(bucket_min, min_valid_advance)
-        effective_max = max_valid_advance if bucket_max is None else min(bucket_max, max_valid_advance)
-        if effective_min <= effective_max:
-            valid_options.append((effective_min, effective_max))
-            valid_bucket_indices.append(index)
-
-            # Adaptive rebalance: nudge sampling toward target distribution over time
-            # so constrained windows don't over-concentrate very short lead time buckets.
-            if total_sampled > 0:
-                current_share = lead_time_bucket_counts[index] / total_sampled
-                target_share = lead_time_weights[index]
-                correction = target_share / max(current_share, 1e-6)
-                correction = min(4.0, max(0.2, correction))
-                valid_weights.append(lead_time_weights[index] * correction)
-            else:
-                valid_weights.append(lead_time_weights[index])
-
-    if not valid_options:
+    if min_valid_advance > max_valid_advance:
         return min_valid_advance, get_lead_time_bucket_index(min_valid_advance)
 
-    bucket_idx = int(np.random.choice(np.arange(len(valid_options)), p=normalize_weights(valid_weights)))
-    bucket_min, bucket_max = valid_options[bucket_idx]
-    selected_bucket_idx = valid_bucket_indices[bucket_idx]
-    candidate_advances = np.arange(bucket_min, bucket_max + 1)
+    total_sampled = sum(lead_time_bucket_counts)
+    bucket_corrections = []
+    for index, target_share in enumerate(lead_time_weights):
+        if total_sampled > 0:
+            current_share = lead_time_bucket_counts[index] / total_sampled
+            correction = target_share / max(current_share, 1e-6)
+            correction = min(8.0, max(0.1, correction))
+            bucket_corrections.append(correction)
+        else:
+            bucket_corrections.append(1.0)
+
+    candidate_advances = np.arange(min_valid_advance, max_valid_advance + 1)
     candidate_weights = []
+
     for advance in candidate_advances:
+        bucket_idx = get_lead_time_bucket_index(int(advance))
+        lead_time_factor = max(1e-6, lead_time_weights[bucket_idx] * bucket_corrections[bucket_idx])
+
         booking_date = checkin_date - timedelta(days=int(advance))
         # Strong target-share balancing keeps realized booking volume close to
         # configured month/year distribution while respecting lead-time feasibility.
@@ -128,21 +116,24 @@ def sample_advance_days(
             target_date_share = booking_date_target_share.get(booking_date, 0.0)
             actual_date_share = booking_date_counts.get(booking_date, 0) / total_assigned_bookings
             date_gap = target_date_share / max(actual_date_share, 1e-6)
-            date_gap = min(15.0, max(0.05, date_gap))
+            date_gap = min(30.0, max(0.03, date_gap))
 
             booking_year = booking_date.year
             target_year_share = booking_year_target_share.get(booking_year, 0.0)
             actual_year_share = booking_year_counts.get(booking_year, 0) / total_assigned_bookings
             year_gap = target_year_share / max(actual_year_share, 1e-6)
-            year_gap = min(8.0, max(0.1, year_gap))
+            year_gap = min(20.0, max(0.03, year_gap))
         else:
             date_gap = 1.0
             year_gap = 1.0
 
-        candidate_weights.append(max(0.001, smoothing_factor * pace_factor * date_gap * year_gap))
+        balancing_factor = (date_gap ** 1.2) * (year_gap ** 1.4)
+        candidate_weights.append(
+            max(0.0000001, lead_time_factor * smoothing_factor * pace_factor * balancing_factor)
+        )
 
     sampled_advance = int(np.random.choice(candidate_advances, p=normalize_weights(candidate_weights)))
-    return sampled_advance, selected_bucket_idx
+    return sampled_advance, get_lead_time_bucket_index(sampled_advance)
 
 
 def get_occupancy_for_date(checkin_date, today, tier_ranges, fallback_min=50, fallback_max=80):
