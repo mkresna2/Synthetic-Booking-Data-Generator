@@ -73,6 +73,10 @@ def sample_advance_days(
     weekday_weekend_multipliers,
     booking_base_year,
     annual_pickup_uplift_pct,
+    booking_date_target_share,
+    booking_year_target_share,
+    booking_year_counts,
+    total_assigned_bookings,
 ):
     valid_options = []
     valid_weights = []
@@ -108,8 +112,8 @@ def sample_advance_days(
     candidate_weights = []
     for advance in candidate_advances:
         booking_date = checkin_date - timedelta(days=int(advance))
-        # Smooth bookings across the full booking window by preferring dates
-        # with fewer already-assigned bookings.
+        # Strong target-share balancing keeps realized booking volume close to
+        # configured month/year distribution while respecting lead-time feasibility.
         smoothing_factor = 1.0 / (booking_date_counts.get(booking_date, 0) + 1.0)
         pace_factor = get_booking_pace_factor(
             booking_date,
@@ -119,7 +123,23 @@ def sample_advance_days(
             booking_base_year,
             annual_pickup_uplift_pct,
         )
-        candidate_weights.append(max(0.05, smoothing_factor * pace_factor))
+
+        if total_assigned_bookings > 0:
+            target_date_share = booking_date_target_share.get(booking_date, 0.0)
+            actual_date_share = booking_date_counts.get(booking_date, 0) / total_assigned_bookings
+            date_gap = target_date_share / max(actual_date_share, 1e-6)
+            date_gap = min(15.0, max(0.05, date_gap))
+
+            booking_year = booking_date.year
+            target_year_share = booking_year_target_share.get(booking_year, 0.0)
+            actual_year_share = booking_year_counts.get(booking_year, 0) / total_assigned_bookings
+            year_gap = target_year_share / max(actual_year_share, 1e-6)
+            year_gap = min(8.0, max(0.1, year_gap))
+        else:
+            date_gap = 1.0
+            year_gap = 1.0
+
+        candidate_weights.append(max(0.001, smoothing_factor * pace_factor * date_gap * year_gap))
 
     sampled_advance = int(np.random.choice(candidate_advances, p=normalize_weights(candidate_weights)))
     return sampled_advance, selected_bucket_idx
@@ -556,10 +576,42 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
         booking_counter = 1
         lead_time_bucket_counts = [0] * len(LEAD_TIME_BUCKETS)
         booking_date_counts = {}
+        booking_year_counts = {}
         booking_day = booking_start_dt
         while booking_day <= booking_end_dt:
             booking_date_counts[booking_day] = 0
+            booking_year_counts[booking_day.year] = 0
             booking_day += timedelta(days=1)
+
+        # Build target shares for booking dates and years so sampling can correct
+        # drift and keep a repeatable month pattern with controlled YoY uplift.
+        booking_date_target_weight = {}
+        booking_day = booking_start_dt
+        while booking_day <= booking_end_dt:
+            booking_date_target_weight[booking_day] = get_booking_pace_factor(
+                booking_day,
+                booking_pace_mode,
+                seasonal_month_multipliers,
+                weekday_weekend_multipliers,
+                booking_base_year,
+                annual_pickup_uplift_pct,
+            )
+            booking_day += timedelta(days=1)
+
+        total_target_weight = max(1e-9, float(sum(booking_date_target_weight.values())))
+        booking_date_target_share = {
+            dt: weight / total_target_weight for dt, weight in booking_date_target_weight.items()
+        }
+
+        booking_year_target_weight = {}
+        for dt, weight in booking_date_target_weight.items():
+            booking_year_target_weight[dt.year] = booking_year_target_weight.get(dt.year, 0.0) + weight
+
+        booking_year_target_share = {
+            year: weight / total_target_weight for year, weight in booking_year_target_weight.items()
+        }
+
+        total_assigned_bookings = 0
 
         # Get today's date for seasonal occupancy calculation
         today_dt = datetime.today()
@@ -594,6 +646,10 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                         weekday_weekend_multipliers,
                         booking_base_year,
                         annual_pickup_uplift_pct,
+                        booking_date_target_share,
+                        booking_year_target_share,
+                        booking_year_counts,
+                        total_assigned_bookings,
                     )
                     book_date = checkin_date - timedelta(days=advance)
 
@@ -669,6 +725,8 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                         lead_time_bucket_counts[sampled_bucket_idx] += 1
                         if book_date in booking_date_counts:
                             booking_date_counts[book_date] += 1
+                        booking_year_counts[book_date.year] = booking_year_counts.get(book_date.year, 0) + 1
+                        total_assigned_bookings += 1
 
                         if status == "Confirmed":
                             stay = checkin_date
