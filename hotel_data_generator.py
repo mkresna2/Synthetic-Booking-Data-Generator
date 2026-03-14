@@ -40,19 +40,25 @@ def get_lead_time_bucket_index(advance_days):
 def get_booking_pace_factor(
     booking_date,
     booking_pace_mode,
-    seasonal_quarter_multipliers,
+    seasonal_month_multipliers,
     weekday_weekend_multipliers,
+    booking_base_year,
+    annual_pickup_uplift_pct,
 ):
-    if booking_pace_mode == "Seasonal (Quarterly)":
-        quarter = ((booking_date.month - 1) // 3) + 1
-        return seasonal_quarter_multipliers.get(quarter, 1.0)
+    base_factor = 1.0
 
-    if booking_pace_mode == "Weekday/Weekend":
+    if booking_pace_mode == "Seasonal (Monthly Repeating)":
+        base_factor = seasonal_month_multipliers.get(booking_date.month, 1.0)
+
+    elif booking_pace_mode == "Weekday/Weekend":
         if booking_date.weekday() >= 5:
-            return weekday_weekend_multipliers["weekend"]
-        return weekday_weekend_multipliers["weekday"]
+            base_factor = weekday_weekend_multipliers["weekend"]
+        else:
+            base_factor = weekday_weekend_multipliers["weekday"]
 
-    return 1.0
+    years_from_base = max(0, booking_date.year - booking_base_year)
+    yearly_factor = (1 + (annual_pickup_uplift_pct / 100.0)) ** years_from_base
+    return base_factor * yearly_factor
 
 
 def sample_advance_days(
@@ -63,8 +69,10 @@ def sample_advance_days(
     checkin_date,
     booking_date_counts,
     booking_pace_mode,
-    seasonal_quarter_multipliers,
+    seasonal_month_multipliers,
     weekday_weekend_multipliers,
+    booking_base_year,
+    annual_pickup_uplift_pct,
 ):
     valid_options = []
     valid_weights = []
@@ -106,8 +114,10 @@ def sample_advance_days(
         pace_factor = get_booking_pace_factor(
             booking_date,
             booking_pace_mode,
-            seasonal_quarter_multipliers,
+            seasonal_month_multipliers,
             weekday_weekend_multipliers,
+            booking_base_year,
+            annual_pickup_uplift_pct,
         )
         candidate_weights.append(max(0.05, smoothing_factor * pace_factor))
 
@@ -404,26 +414,28 @@ for idx, (label, _, _) in enumerate(LEAD_TIME_BUCKETS):
 st.sidebar.markdown("**Booking Pace Distribution**")
 booking_pace_mode = st.sidebar.selectbox(
     "Booking Pace Mode",
-    ["Uniform", "Seasonal (Quarterly)", "Weekday/Weekend"],
+    ["Uniform", "Seasonal (Monthly Repeating)", "Weekday/Weekend"],
     index=0,
     help="Controls how booking dates are spread across the full booking window after lead-time selection.",
 )
 
-seasonal_quarter_multipliers = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
+seasonal_month_multipliers = {month_idx: 1.0 for month_idx in range(1, 13)}
 weekday_weekend_multipliers = {"weekday": 1.0, "weekend": 1.0}
 
-if booking_pace_mode == "Seasonal (Quarterly)":
-    st.sidebar.caption("Set relative booking activity by quarter (100% = neutral).")
-    q1 = st.sidebar.slider("Q1 Multiplier (%)", 50, 200, 90, step=5)
-    q2 = st.sidebar.slider("Q2 Multiplier (%)", 50, 200, 100, step=5)
-    q3 = st.sidebar.slider("Q3 Multiplier (%)", 50, 200, 105, step=5)
-    q4 = st.sidebar.slider("Q4 Multiplier (%)", 50, 200, 120, step=5)
-    seasonal_quarter_multipliers = {
-        1: q1 / 100.0,
-        2: q2 / 100.0,
-        3: q3 / 100.0,
-        4: q4 / 100.0,
-    }
+if booking_pace_mode == "Seasonal (Monthly Repeating)":
+    st.sidebar.caption("Set relative booking activity by month. This pattern repeats every year (100% = neutral).")
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    month_defaults = [90, 88, 92, 98, 105, 95, 93, 100, 108, 115, 120, 110]
+    with st.sidebar.expander("Configure Monthly Multipliers (%)", expanded=False):
+        for month_idx, month_label in enumerate(month_labels, start=1):
+            seasonal_month_multipliers[month_idx] = st.slider(
+                f"{month_label} multiplier (%)",
+                50,
+                200,
+                month_defaults[month_idx - 1],
+                step=5,
+                key=f"pace_month_{month_idx}",
+            ) / 100.0
 elif booking_pace_mode == "Weekday/Weekend":
     st.sidebar.caption("Set relative booking activity by booking day type (100% = neutral).")
     weekday_mult = st.sidebar.slider("Weekday Multiplier (%)", 50, 200, 110, step=5)
@@ -432,6 +444,17 @@ elif booking_pace_mode == "Weekday/Weekend":
         "weekday": weekday_mult / 100.0,
         "weekend": weekend_mult / 100.0,
     }
+
+annual_pickup_uplift_pct = st.sidebar.slider(
+    "Year-over-Year Pickup Uplift (%)",
+    0,
+    20,
+    5,
+    step=1,
+    help="Applies a gradual uplift to later booking years while keeping the same monthly/weekday pattern.",
+)
+
+booking_base_year = booking_start.year
 
 last_7_pickup_share_threshold = st.sidebar.slider(
     "Last 7 Days Pickup Warning Threshold (%)",
@@ -501,6 +524,7 @@ if occ_mode == "Seasonal/Progressive" and tier_ranges:
 max_booking_lead_days = max(0, (datetime.combine(checkin_end, datetime.min.time()) - datetime.combine(booking_start, datetime.min.time())).days)
 st.caption(f"**Lead Time Pattern:** {lead_time_preset} | Max supported lead time from current window: {max_booking_lead_days} days")
 st.caption(f"**Booking Pace Mode:** {booking_pace_mode}")
+st.caption(f"**Year-over-Year Pickup Uplift:** {annual_pickup_uplift_pct}%")
 st.caption(f"**Pickup Warning Threshold (0-7 days):** {last_7_pickup_share_threshold}% of total room nights")
 
 st.markdown("**Rate Plan Discounts**")
@@ -566,8 +590,10 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                         checkin_date,
                         booking_date_counts,
                         booking_pace_mode,
-                        seasonal_quarter_multipliers,
+                        seasonal_month_multipliers,
                         weekday_weekend_multipliers,
+                        booking_base_year,
+                        annual_pickup_uplift_pct,
                     )
                     book_date = checkin_date - timedelta(days=advance)
 
@@ -743,41 +769,87 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
 
         booking_calendar = pd.date_range(booking_start_dt, booking_end_dt, freq="D")
 
-        if booking_pace_mode == "Seasonal (Quarterly)":
-            quarter_labels = ["Q1", "Q2", "Q3", "Q4"]
-            days_per_quarter = {1: 0, 2: 0, 3: 0, 4: 0}
-            for dt in booking_calendar:
-                q = ((dt.month - 1) // 3) + 1
-                days_per_quarter[q] += 1
+        year_distribution = diagnostics_df.copy()
+        year_distribution["Booking_Year"] = year_distribution["Booking_Date"].dt.year
+        realized_per_year = year_distribution.groupby("Booking_Year").size().rename("Confirmed_Bookings").reset_index()
 
-            realized_per_quarter = {1: 0, 2: 0, 3: 0, 4: 0}
+        year_weight_rows = []
+        for dt in booking_calendar:
+            factor = get_booking_pace_factor(
+                dt,
+                booking_pace_mode,
+                seasonal_month_multipliers,
+                weekday_weekend_multipliers,
+                booking_base_year,
+                annual_pickup_uplift_pct,
+            )
+            year_weight_rows.append({"Booking_Year": dt.year, "Weight": factor})
+
+        year_weight_df = pd.DataFrame(year_weight_rows)
+        expected_per_year = year_weight_df.groupby("Booking_Year")["Weight"].sum().rename("Expected_Weight").reset_index()
+
+        year_diag = expected_per_year.merge(realized_per_year, on="Booking_Year", how="left")
+        year_diag["Confirmed_Bookings"] = year_diag["Confirmed_Bookings"].fillna(0).astype(int)
+
+        total_expected_weight = max(1.0, float(year_diag["Expected_Weight"].sum()))
+        total_realized_confirmed = max(1, int(year_diag["Confirmed_Bookings"].sum()))
+        year_diag["Expected_%"] = (year_diag["Expected_Weight"] / total_expected_weight * 100).round(2)
+        year_diag["Realized_%"] = (year_diag["Confirmed_Bookings"] / total_realized_confirmed * 100).round(2)
+        year_diag["Delta_pp"] = (year_diag["Realized_%"] - year_diag["Expected_%"]).round(2)
+        year_diag["Configured_Uplift_Factor"] = year_diag["Booking_Year"].apply(
+            lambda y: round((1 + (annual_pickup_uplift_pct / 100.0)) ** max(0, int(y) - booking_base_year), 3)
+        )
+        year_diag = year_diag[[
+            "Booking_Year",
+            "Configured_Uplift_Factor",
+            "Expected_%",
+            "Realized_%",
+            "Delta_pp",
+            "Confirmed_Bookings",
+        ]]
+
+        st.markdown("**Year Uplift Diagnostic (Expected vs Realized)**")
+        st.dataframe(year_diag, use_container_width=True, hide_index=True)
+
+        if booking_pace_mode == "Seasonal (Monthly Repeating)":
+            month_labels = {
+                1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+                7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
+            }
+
+            days_per_month = {month_idx: 0 for month_idx in range(1, 13)}
+            for dt in booking_calendar:
+                days_per_month[dt.month] += 1
+
+            realized_per_month = {month_idx: 0 for month_idx in range(1, 13)}
             for dt in diagnostics_df["Booking_Date"]:
-                q = ((dt.month - 1) // 3) + 1
-                realized_per_quarter[q] += 1
+                realized_per_month[dt.month] += 1
 
             expected_weighted = {
-                q: days_per_quarter[q] * seasonal_quarter_multipliers[q]
-                for q in days_per_quarter
+                month_idx: days_per_month[month_idx] * seasonal_month_multipliers[month_idx]
+                for month_idx in days_per_month
             }
             total_expected_weighted = max(1.0, float(sum(expected_weighted.values())))
-            total_realized_confirmed = max(1, int(sum(realized_per_quarter.values())))
+            total_realized_confirmed = max(1, int(sum(realized_per_month.values())))
 
             pace_rows = []
-            for q_idx, q_label in enumerate(quarter_labels, start=1):
-                expected_pct = (expected_weighted[q_idx] / total_expected_weighted) * 100
-                realized_pct = (realized_per_quarter[q_idx] / total_realized_confirmed) * 100
+            for month_idx in range(1, 13):
+                if days_per_month[month_idx] == 0:
+                    continue
+                expected_pct = (expected_weighted[month_idx] / total_expected_weighted) * 100
+                realized_pct = (realized_per_month[month_idx] / total_realized_confirmed) * 100
                 pace_rows.append({
-                    "Segment": q_label,
-                    "Configured_Multiplier": round(seasonal_quarter_multipliers[q_idx], 2),
-                    "Window_Days": days_per_quarter[q_idx],
+                    "Segment": month_labels[month_idx],
+                    "Configured_Multiplier": round(seasonal_month_multipliers[month_idx], 2),
+                    "Window_Days": days_per_month[month_idx],
                     "Expected_%": round(expected_pct, 2),
                     "Realized_%": round(realized_pct, 2),
                     "Delta_pp": round(realized_pct - expected_pct, 2),
-                    "Confirmed_Bookings": realized_per_quarter[q_idx],
+                    "Confirmed_Bookings": realized_per_month[month_idx],
                 })
 
             pace_df = pd.DataFrame(pace_rows)
-            st.markdown("**Booking Pace Diagnostic (Quarterly)**")
+            st.markdown("**Booking Pace Diagnostic (Monthly Repeating)**")
             st.dataframe(pace_df, use_container_width=True, hide_index=True)
 
         elif booking_pace_mode == "Weekday/Weekend":

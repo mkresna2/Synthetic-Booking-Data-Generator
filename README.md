@@ -29,15 +29,16 @@ Then open the URL shown in the terminal (usually `http://localhost:8501`).
 
 ## Configuration (sidebar)
 
-| Section                      | Options                                                                                                                                                  |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Date Ranges**              | Booking window (when bookings are made), Arrival/Departure window (stay dates)                                                                           |
-| **Occupancy**                | Fixed range (e.g. 50–80%) or random (50–95%) per day                                                                                                     |
-| **Room Types**               | Standard, Deluxe, Suite — number of rooms and base rate (IDR) each                                                                                       |
-| **Rate Plans**               | BAR, Non-Refundable, Corporate, Promotion — discount % from base rate                                                                                    |
-| **Booking Lead Time**        | Preset or custom bucketed distribution for how many days in advance bookings are created, including 90+ day lead times when the booking window allows it |
-| **Booking Pace Mode**        | Choose how bookings are spread over the booking window: Uniform, Seasonal (quarter multipliers), or Weekday/Weekend                                      |
-| **Pickup Warning Threshold** | Configurable threshold for 0–7 day pickup share (% of total room nights) with post-generation warning when exceeded                                      |
+| Section                          | Options                                                                                                                                                  |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Date Ranges**                  | Booking window (when bookings are made), Arrival/Departure window (stay dates)                                                                           |
+| **Occupancy**                    | Fixed range (e.g. 50–80%) or random (50–95%) per day                                                                                                     |
+| **Room Types**                   | Standard, Deluxe, Suite — number of rooms and base rate (IDR) each                                                                                       |
+| **Rate Plans**                   | BAR, Non-Refundable, Corporate, Promotion — discount % from base rate                                                                                    |
+| **Booking Lead Time**            | Preset or custom bucketed distribution for how many days in advance bookings are created, including 90+ day lead times when the booking window allows it |
+| **Booking Pace Mode**            | Choose how bookings are spread over the booking window: Uniform, Seasonal (monthly repeating multipliers), or Weekday/Weekend                            |
+| **Year-over-Year Pickup Uplift** | Gradually increases booking pickup in later years while preserving the selected monthly or weekday/weekend pattern                                       |
+| **Pickup Warning Threshold**     | Configurable threshold for 0–7 day pickup share (% of total room nights) with post-generation warning when exceeded                                      |
 
 Booking channels (Website, OTA, Direct, Walk-in) and cancellation probability are built-in; you can change them in the code if needed.
 
@@ -51,7 +52,7 @@ After clicking **Generate Hotel Data**, you get:
 2. **Room Inventory** — Per date and room type: total rooms, available, occupied
 3. **Daily Rates** — Per date and room type: base rate, dynamic adjustment, final rate, promotion
 4. **Market Data** — Per date: local event, competitor rates, market demand index
-5. **Diagnostics** — Lead-time configured vs realized mix, booking-month spread, booking-pace validation table (Quarterly or Weekday/Weekend or Uniform-by-month), and 0–7 day pickup warning metrics
+5. **Diagnostics** — Lead-time configured vs realized mix, booking-month spread, year uplift expected-vs-realized table, booking-pace validation table (Monthly Repeating or Weekday/Weekend or Uniform-by-month), and 0–7 day pickup warning metrics
 
 Use **Download All CSVs (ZIP)** or the per-file download buttons to save the data.
 
