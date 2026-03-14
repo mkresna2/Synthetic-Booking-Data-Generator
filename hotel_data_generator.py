@@ -741,6 +741,99 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
         st.markdown("**Confirmed Bookings by Booking Month**")
         st.dataframe(month_distribution, use_container_width=True, hide_index=True)
 
+        booking_calendar = pd.date_range(booking_start_dt, booking_end_dt, freq="D")
+
+        if booking_pace_mode == "Seasonal (Quarterly)":
+            quarter_labels = ["Q1", "Q2", "Q3", "Q4"]
+            days_per_quarter = {1: 0, 2: 0, 3: 0, 4: 0}
+            for dt in booking_calendar:
+                q = ((dt.month - 1) // 3) + 1
+                days_per_quarter[q] += 1
+
+            realized_per_quarter = {1: 0, 2: 0, 3: 0, 4: 0}
+            for dt in diagnostics_df["Booking_Date"]:
+                q = ((dt.month - 1) // 3) + 1
+                realized_per_quarter[q] += 1
+
+            expected_weighted = {
+                q: days_per_quarter[q] * seasonal_quarter_multipliers[q]
+                for q in days_per_quarter
+            }
+            total_expected_weighted = max(1.0, float(sum(expected_weighted.values())))
+            total_realized_confirmed = max(1, int(sum(realized_per_quarter.values())))
+
+            pace_rows = []
+            for q_idx, q_label in enumerate(quarter_labels, start=1):
+                expected_pct = (expected_weighted[q_idx] / total_expected_weighted) * 100
+                realized_pct = (realized_per_quarter[q_idx] / total_realized_confirmed) * 100
+                pace_rows.append({
+                    "Segment": q_label,
+                    "Configured_Multiplier": round(seasonal_quarter_multipliers[q_idx], 2),
+                    "Window_Days": days_per_quarter[q_idx],
+                    "Expected_%": round(expected_pct, 2),
+                    "Realized_%": round(realized_pct, 2),
+                    "Delta_pp": round(realized_pct - expected_pct, 2),
+                    "Confirmed_Bookings": realized_per_quarter[q_idx],
+                })
+
+            pace_df = pd.DataFrame(pace_rows)
+            st.markdown("**Booking Pace Diagnostic (Quarterly)**")
+            st.dataframe(pace_df, use_container_width=True, hide_index=True)
+
+        elif booking_pace_mode == "Weekday/Weekend":
+            calendar_weekday_days = int(sum(1 for dt in booking_calendar if dt.weekday() < 5))
+            calendar_weekend_days = int(sum(1 for dt in booking_calendar if dt.weekday() >= 5))
+
+            realized_weekday = int(sum(1 for dt in diagnostics_df["Booking_Date"] if dt.weekday() < 5))
+            realized_weekend = int(sum(1 for dt in diagnostics_df["Booking_Date"] if dt.weekday() >= 5))
+
+            expected_weekday_weight = calendar_weekday_days * weekday_weekend_multipliers["weekday"]
+            expected_weekend_weight = calendar_weekend_days * weekday_weekend_multipliers["weekend"]
+            total_expected_weight = max(1.0, expected_weekday_weight + expected_weekend_weight)
+            total_realized_confirmed = max(1, realized_weekday + realized_weekend)
+
+            pace_rows = [
+                {
+                    "Segment": "Weekday",
+                    "Configured_Multiplier": round(weekday_weekend_multipliers["weekday"], 2),
+                    "Window_Days": calendar_weekday_days,
+                    "Expected_%": round((expected_weekday_weight / total_expected_weight) * 100, 2),
+                    "Realized_%": round((realized_weekday / total_realized_confirmed) * 100, 2),
+                    "Delta_pp": round(((realized_weekday / total_realized_confirmed) - (expected_weekday_weight / total_expected_weight)) * 100, 2),
+                    "Confirmed_Bookings": realized_weekday,
+                },
+                {
+                    "Segment": "Weekend",
+                    "Configured_Multiplier": round(weekday_weekend_multipliers["weekend"], 2),
+                    "Window_Days": calendar_weekend_days,
+                    "Expected_%": round((expected_weekend_weight / total_expected_weight) * 100, 2),
+                    "Realized_%": round((realized_weekend / total_realized_confirmed) * 100, 2),
+                    "Delta_pp": round(((realized_weekend / total_realized_confirmed) - (expected_weekend_weight / total_expected_weight)) * 100, 2),
+                    "Confirmed_Bookings": realized_weekend,
+                },
+            ]
+            pace_df = pd.DataFrame(pace_rows)
+            st.markdown("**Booking Pace Diagnostic (Weekday/Weekend)**")
+            st.dataframe(pace_df, use_container_width=True, hide_index=True)
+
+        else:
+            calendar_df = pd.DataFrame({"Booking_Date": booking_calendar})
+            calendar_df["Booking_Month"] = calendar_df["Booking_Date"].dt.to_period("M").astype(str)
+            month_days = calendar_df.groupby("Booking_Month").size().rename("Window_Days").reset_index()
+
+            realized_month = month_df.groupby("Booking_Month").size().rename("Confirmed_Bookings").reset_index()
+            uniform_df = month_days.merge(realized_month, on="Booking_Month", how="left")
+            uniform_df["Confirmed_Bookings"] = uniform_df["Confirmed_Bookings"].fillna(0).astype(int)
+
+            total_days = max(1, int(uniform_df["Window_Days"].sum()))
+            total_realized_confirmed = max(1, int(uniform_df["Confirmed_Bookings"].sum()))
+            uniform_df["Expected_%"] = (uniform_df["Window_Days"] / total_days * 100).round(2)
+            uniform_df["Realized_%"] = (uniform_df["Confirmed_Bookings"] / total_realized_confirmed * 100).round(2)
+            uniform_df["Delta_pp"] = (uniform_df["Realized_%"] - uniform_df["Expected_%"]).round(2)
+
+            st.markdown("**Booking Pace Diagnostic (Uniform by Month)**")
+            st.dataframe(uniform_df, use_container_width=True, hide_index=True)
+
         # Pickup diagnostics by room nights and booking counts
         diagnostics_df["Room_Nights"] = diagnostics_df["Number_of_Nights"]
 

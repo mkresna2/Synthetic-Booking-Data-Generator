@@ -51,6 +51,7 @@ After clicking **Generate Hotel Data**, you get:
 2. **Room Inventory** — Per date and room type: total rooms, available, occupied
 3. **Daily Rates** — Per date and room type: base rate, dynamic adjustment, final rate, promotion
 4. **Market Data** — Per date: local event, competitor rates, market demand index
+5. **Diagnostics** — Lead-time configured vs realized mix, booking-month spread, booking-pace validation table (Quarterly or Weekday/Weekend or Uniform-by-month), and 0–7 day pickup warning metrics
 
 Use **Download All CSVs (ZIP)** or the per-file download buttons to save the data.
 
