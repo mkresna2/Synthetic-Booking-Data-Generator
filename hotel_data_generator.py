@@ -27,23 +27,49 @@ def normalize_weights(weights):
     return [weight / total_weight for weight in weights]
 
 
-def sample_advance_days(min_valid_advance, max_valid_advance, lead_time_weights):
+def get_lead_time_bucket_index(advance_days):
+    for idx, (_, bucket_min, bucket_max) in enumerate(LEAD_TIME_BUCKETS):
+        if bucket_max is None:
+            if advance_days >= bucket_min:
+                return idx
+        elif bucket_min <= advance_days <= bucket_max:
+            return idx
+    return len(LEAD_TIME_BUCKETS) - 1
+
+
+def sample_advance_days(min_valid_advance, max_valid_advance, lead_time_weights, lead_time_bucket_counts):
     valid_options = []
     valid_weights = []
+    valid_bucket_indices = []
+
+    total_sampled = sum(lead_time_bucket_counts)
 
     for index, (_, bucket_min, bucket_max) in enumerate(LEAD_TIME_BUCKETS):
         effective_min = max(bucket_min, min_valid_advance)
         effective_max = max_valid_advance if bucket_max is None else min(bucket_max, max_valid_advance)
         if effective_min <= effective_max:
             valid_options.append((effective_min, effective_max))
-            valid_weights.append(lead_time_weights[index])
+            valid_bucket_indices.append(index)
+
+            # Adaptive rebalance: nudge sampling toward target distribution over time
+            # so constrained windows don't over-concentrate very short lead time buckets.
+            if total_sampled > 0:
+                current_share = lead_time_bucket_counts[index] / total_sampled
+                target_share = lead_time_weights[index]
+                correction = target_share / max(current_share, 1e-6)
+                correction = min(4.0, max(0.2, correction))
+                valid_weights.append(lead_time_weights[index] * correction)
+            else:
+                valid_weights.append(lead_time_weights[index])
 
     if not valid_options:
-        return min_valid_advance
+        return min_valid_advance, get_lead_time_bucket_index(min_valid_advance)
 
     bucket_idx = int(np.random.choice(np.arange(len(valid_options)), p=normalize_weights(valid_weights)))
     bucket_min, bucket_max = valid_options[bucket_idx]
-    return int(np.random.randint(bucket_min, bucket_max + 1))
+    selected_bucket_idx = valid_bucket_indices[bucket_idx]
+    sampled_advance = int(np.random.randint(bucket_min, bucket_max + 1))
+    return sampled_advance, selected_bucket_idx
 
 
 def get_occupancy_for_date(checkin_date, today, tier_ranges, fallback_min=50, fallback_max=80):
@@ -332,6 +358,15 @@ st.sidebar.markdown("**Expected Lead Time Distribution:**")
 for idx, (label, _, _) in enumerate(LEAD_TIME_BUCKETS):
     st.sidebar.progress(lead_time_weights[idx], text=f"{label}: {lead_time_weights[idx] * 100:.1f}%")
 
+last_7_pickup_share_threshold = st.sidebar.slider(
+    "Last 7 Days Pickup Warning Threshold (%)",
+    5,
+    80,
+    25,
+    step=1,
+    help="Show a warning when room-night pickup from bookings made 0-7 days before arrival exceeds this share of total room nights.",
+)
+
 # --- Stay Duration Distribution ---
 st.sidebar.subheader("🌙 Stay Duration Distribution")
 st.sidebar.caption("💡 Business hotels: 1-2 nights common | Resorts (Bali): 3-5 nights common")
@@ -390,6 +425,7 @@ if occ_mode == "Seasonal/Progressive" and tier_ranges:
 
 max_booking_lead_days = max(0, (datetime.combine(checkin_end, datetime.min.time()) - datetime.combine(booking_start, datetime.min.time())).days)
 st.caption(f"**Lead Time Pattern:** {lead_time_preset} | Max supported lead time from current window: {max_booking_lead_days} days")
+st.caption(f"**Pickup Warning Threshold (0-7 days):** {last_7_pickup_share_threshold}% of total room nights")
 
 st.markdown("**Rate Plan Discounts**")
 rp_data = [{"Rate Plan": plan, "Discount": f"{disc*100:.0f}%"} for plan, disc in rate_plan_discounts.items()]
@@ -418,6 +454,7 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
         # --- Bookings ---
         bookings_data = []
         booking_counter = 1
+        lead_time_bucket_counts = [0] * len(LEAD_TIME_BUCKETS)
 
         # Get today's date for seasonal occupancy calculation
         today_dt = datetime.today()
@@ -440,10 +477,25 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
 
                     min_valid_advance = max(0, (checkin_date - latest_booking_date).days)
                     max_valid_advance = (checkin_date - earliest_booking_date).days
-                    advance = sample_advance_days(min_valid_advance, max_valid_advance, lead_time_weights)
+                    advance, sampled_bucket_idx = sample_advance_days(
+                        min_valid_advance,
+                        max_valid_advance,
+                        lead_time_weights,
+                        lead_time_bucket_counts,
+                    )
                     book_date = checkin_date - timedelta(days=advance)
+                    lead_time_bucket_counts[sampled_bucket_idx] += 1
 
-                    num_nights    = int(np.random.choice([1, 2, 3, 4, 5, 6, 7], p=night_weights))
+                    # Last-minute demand usually carries shorter stays; this keeps
+                    # late pickup room nights from becoming unrealistically large.
+                    if advance <= 3:
+                        last_minute_weights = normalize_weights([55, 25, 12, 5, 2, 1, 0])
+                        num_nights = int(np.random.choice([1, 2, 3, 4, 5, 6, 7], p=last_minute_weights))
+                    elif advance <= 7:
+                        short_lead_weights = normalize_weights([45, 28, 14, 7, 4, 2, 0])
+                        num_nights = int(np.random.choice([1, 2, 3, 4, 5, 6, 7], p=short_lead_weights))
+                    else:
+                        num_nights = int(np.random.choice([1, 2, 3, 4, 5, 6, 7], p=night_weights))
                     checkout_date = checkin_date + timedelta(days=num_nights)
 
                     if checkout_date <= checkin_end_dt:
@@ -549,6 +601,96 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
 
     with tab2:
         st.dataframe(market_df.head(500), use_container_width=True)
+
+    # ── Lead Time Diagnostics ───────────────────────────────────────────────
+    st.subheader("🔎 Lead Time & Pickup Diagnostics")
+
+    if len(bookings_df) > 0:
+        diagnostics_df = bookings_df.copy()
+        diagnostics_df["Booking_Date"] = pd.to_datetime(diagnostics_df["Booking_Date"])
+        diagnostics_df["Check_in_Date"] = pd.to_datetime(diagnostics_df["Check_in_Date"])
+
+        diagnostics_df["Lead_Time_Days"] = (
+            diagnostics_df["Check_in_Date"] - diagnostics_df["Booking_Date"]
+        ).dt.days
+
+        # Realized booking-count distribution by configured lead-time buckets
+        realized_bucket_counts = [0] * len(LEAD_TIME_BUCKETS)
+        for lead_time in diagnostics_df["Lead_Time_Days"]:
+            idx = get_lead_time_bucket_index(int(lead_time))
+            realized_bucket_counts[idx] += 1
+
+        total_realized_bookings = max(1, sum(realized_bucket_counts))
+        distribution_rows = []
+        for idx, (label, _, _) in enumerate(LEAD_TIME_BUCKETS):
+            target_pct = lead_time_weights[idx] * 100
+            actual_pct = (realized_bucket_counts[idx] / total_realized_bookings) * 100
+            distribution_rows.append({
+                "Lead_Time_Bucket": label,
+                "Configured_%": round(target_pct, 2),
+                "Realized_%": round(actual_pct, 2),
+                "Delta_pp": round(actual_pct - target_pct, 2),
+                "Bookings": realized_bucket_counts[idx],
+            })
+
+        distribution_df = pd.DataFrame(distribution_rows)
+        st.markdown("**Configured vs Realized Lead-Time Mix (Bookings)**")
+        st.dataframe(distribution_df, use_container_width=True, hide_index=True)
+
+        # Pickup diagnostics by room nights and booking counts
+        diagnostics_df["Room_Nights"] = diagnostics_df["Number_of_Nights"]
+
+        pickup_bands = [
+            ("0-7 days", 0, 7),
+            ("8-14 days", 8, 14),
+            ("15-30 days", 15, 30),
+            ("31-60 days", 31, 60),
+            ("61+ days", 61, None),
+        ]
+
+        pickup_rows = []
+        for label, min_day, max_day in pickup_bands:
+            if max_day is None:
+                band_df = diagnostics_df[diagnostics_df["Lead_Time_Days"] >= min_day]
+            else:
+                band_df = diagnostics_df[
+                    (diagnostics_df["Lead_Time_Days"] >= min_day)
+                    & (diagnostics_df["Lead_Time_Days"] <= max_day)
+                ]
+
+            pickup_rows.append({
+                "Pickup_Band": label,
+                "Bookings": int(len(band_df)),
+                "Room_Nights": int(band_df["Room_Nights"].sum()),
+                "Avg_LOS": round(float(band_df["Number_of_Nights"].mean()), 2) if len(band_df) > 0 else 0.0,
+            })
+
+        pickup_df = pd.DataFrame(pickup_rows)
+        st.markdown("**Pickup by Lead-Time Band (Bookings and Room Nights)**")
+        st.dataframe(pickup_df, use_container_width=True, hide_index=True)
+
+        # Headline KPI for last-7-day pickup room nights
+        last_7_band = pickup_df[pickup_df["Pickup_Band"] == "0-7 days"].iloc[0]
+        total_room_nights = max(1, int(diagnostics_df["Room_Nights"].sum()))
+        share_last_7 = (last_7_band["Room_Nights"] / total_room_nights) * 100
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Last 7 Days Pickup (Room Nights)", f"{int(last_7_band['Room_Nights']):,}")
+        delta_vs_threshold = share_last_7 - last_7_pickup_share_threshold
+        k2.metric("Last 7 Days Share", f"{share_last_7:.1f}%", delta=f"{delta_vs_threshold:+.1f} pp vs threshold")
+        k3.metric("Last 7 Days Avg LOS", f"{float(last_7_band['Avg_LOS']):.2f}")
+
+        if share_last_7 > last_7_pickup_share_threshold:
+            st.warning(
+                f"⚠️ Last-7-day pickup share is high: {share_last_7:.1f}% (threshold: {last_7_pickup_share_threshold}%). "
+                "Consider shifting lead-time weights away from 0-7 days or reducing short-lead LOS."
+            )
+        else:
+            st.success(
+                f"✅ Last-7-day pickup share is within threshold: {share_last_7:.1f}% <= {last_7_pickup_share_threshold}%."
+            )
+    else:
+        st.info("No bookings generated, so diagnostics are unavailable.")
 
     # ── Download ZIP ──────────────────────────────────────────────────────────
     st.subheader("⬇️ Download Generated Data")

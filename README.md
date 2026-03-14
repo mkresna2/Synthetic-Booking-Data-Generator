@@ -29,13 +29,14 @@ Then open the URL shown in the terminal (usually `http://localhost:8501`).
 
 ## Configuration (sidebar)
 
-| Section | Options |
-|--------|---------|
-| **Date Ranges** | Booking window (when bookings are made), Arrival/Departure window (stay dates) |
-| **Occupancy** | Fixed range (e.g. 50–80%) or random (50–95%) per day |
-| **Room Types** | Standard, Deluxe, Suite — number of rooms and base rate (IDR) each |
-| **Rate Plans** | BAR, Non-Refundable, Corporate, Promotion — discount % from base rate |
-| **Booking Lead Time** | Preset or custom bucketed distribution for how many days in advance bookings are created, including 90+ day lead times when the booking window allows it |
+| Section                      | Options                                                                                                                                                  |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Date Ranges**              | Booking window (when bookings are made), Arrival/Departure window (stay dates)                                                                           |
+| **Occupancy**                | Fixed range (e.g. 50–80%) or random (50–95%) per day                                                                                                     |
+| **Room Types**               | Standard, Deluxe, Suite — number of rooms and base rate (IDR) each                                                                                       |
+| **Rate Plans**               | BAR, Non-Refundable, Corporate, Promotion — discount % from base rate                                                                                    |
+| **Booking Lead Time**        | Preset or custom bucketed distribution for how many days in advance bookings are created, including 90+ day lead times when the booking window allows it |
+| **Pickup Warning Threshold** | Configurable threshold for 0–7 day pickup share (% of total room nights) with post-generation warning when exceeded                                      |
 
 Booking channels (Website, OTA, Direct, Walk-in) and cancellation probability are built-in; you can change them in the code if needed.
 
