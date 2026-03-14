@@ -37,7 +37,35 @@ def get_lead_time_bucket_index(advance_days):
     return len(LEAD_TIME_BUCKETS) - 1
 
 
-def sample_advance_days(min_valid_advance, max_valid_advance, lead_time_weights, lead_time_bucket_counts):
+def get_booking_pace_factor(
+    booking_date,
+    booking_pace_mode,
+    seasonal_quarter_multipliers,
+    weekday_weekend_multipliers,
+):
+    if booking_pace_mode == "Seasonal (Quarterly)":
+        quarter = ((booking_date.month - 1) // 3) + 1
+        return seasonal_quarter_multipliers.get(quarter, 1.0)
+
+    if booking_pace_mode == "Weekday/Weekend":
+        if booking_date.weekday() >= 5:
+            return weekday_weekend_multipliers["weekend"]
+        return weekday_weekend_multipliers["weekday"]
+
+    return 1.0
+
+
+def sample_advance_days(
+    min_valid_advance,
+    max_valid_advance,
+    lead_time_weights,
+    lead_time_bucket_counts,
+    checkin_date,
+    booking_date_counts,
+    booking_pace_mode,
+    seasonal_quarter_multipliers,
+    weekday_weekend_multipliers,
+):
     valid_options = []
     valid_weights = []
     valid_bucket_indices = []
@@ -68,7 +96,22 @@ def sample_advance_days(min_valid_advance, max_valid_advance, lead_time_weights,
     bucket_idx = int(np.random.choice(np.arange(len(valid_options)), p=normalize_weights(valid_weights)))
     bucket_min, bucket_max = valid_options[bucket_idx]
     selected_bucket_idx = valid_bucket_indices[bucket_idx]
-    sampled_advance = int(np.random.randint(bucket_min, bucket_max + 1))
+    candidate_advances = np.arange(bucket_min, bucket_max + 1)
+    candidate_weights = []
+    for advance in candidate_advances:
+        booking_date = checkin_date - timedelta(days=int(advance))
+        # Smooth bookings across the full booking window by preferring dates
+        # with fewer already-assigned bookings.
+        smoothing_factor = 1.0 / (booking_date_counts.get(booking_date, 0) + 1.0)
+        pace_factor = get_booking_pace_factor(
+            booking_date,
+            booking_pace_mode,
+            seasonal_quarter_multipliers,
+            weekday_weekend_multipliers,
+        )
+        candidate_weights.append(max(0.05, smoothing_factor * pace_factor))
+
+    sampled_advance = int(np.random.choice(candidate_advances, p=normalize_weights(candidate_weights)))
     return sampled_advance, selected_bucket_idx
 
 
@@ -358,6 +401,38 @@ st.sidebar.markdown("**Expected Lead Time Distribution:**")
 for idx, (label, _, _) in enumerate(LEAD_TIME_BUCKETS):
     st.sidebar.progress(lead_time_weights[idx], text=f"{label}: {lead_time_weights[idx] * 100:.1f}%")
 
+st.sidebar.markdown("**Booking Pace Distribution**")
+booking_pace_mode = st.sidebar.selectbox(
+    "Booking Pace Mode",
+    ["Uniform", "Seasonal (Quarterly)", "Weekday/Weekend"],
+    index=0,
+    help="Controls how booking dates are spread across the full booking window after lead-time selection.",
+)
+
+seasonal_quarter_multipliers = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
+weekday_weekend_multipliers = {"weekday": 1.0, "weekend": 1.0}
+
+if booking_pace_mode == "Seasonal (Quarterly)":
+    st.sidebar.caption("Set relative booking activity by quarter (100% = neutral).")
+    q1 = st.sidebar.slider("Q1 Multiplier (%)", 50, 200, 90, step=5)
+    q2 = st.sidebar.slider("Q2 Multiplier (%)", 50, 200, 100, step=5)
+    q3 = st.sidebar.slider("Q3 Multiplier (%)", 50, 200, 105, step=5)
+    q4 = st.sidebar.slider("Q4 Multiplier (%)", 50, 200, 120, step=5)
+    seasonal_quarter_multipliers = {
+        1: q1 / 100.0,
+        2: q2 / 100.0,
+        3: q3 / 100.0,
+        4: q4 / 100.0,
+    }
+elif booking_pace_mode == "Weekday/Weekend":
+    st.sidebar.caption("Set relative booking activity by booking day type (100% = neutral).")
+    weekday_mult = st.sidebar.slider("Weekday Multiplier (%)", 50, 200, 110, step=5)
+    weekend_mult = st.sidebar.slider("Weekend Multiplier (%)", 50, 200, 90, step=5)
+    weekday_weekend_multipliers = {
+        "weekday": weekday_mult / 100.0,
+        "weekend": weekend_mult / 100.0,
+    }
+
 last_7_pickup_share_threshold = st.sidebar.slider(
     "Last 7 Days Pickup Warning Threshold (%)",
     5,
@@ -425,6 +500,7 @@ if occ_mode == "Seasonal/Progressive" and tier_ranges:
 
 max_booking_lead_days = max(0, (datetime.combine(checkin_end, datetime.min.time()) - datetime.combine(booking_start, datetime.min.time())).days)
 st.caption(f"**Lead Time Pattern:** {lead_time_preset} | Max supported lead time from current window: {max_booking_lead_days} days")
+st.caption(f"**Booking Pace Mode:** {booking_pace_mode}")
 st.caption(f"**Pickup Warning Threshold (0-7 days):** {last_7_pickup_share_threshold}% of total room nights")
 
 st.markdown("**Rate Plan Discounts**")
@@ -455,6 +531,11 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
         bookings_data = []
         booking_counter = 1
         lead_time_bucket_counts = [0] * len(LEAD_TIME_BUCKETS)
+        booking_date_counts = {}
+        booking_day = booking_start_dt
+        while booking_day <= booking_end_dt:
+            booking_date_counts[booking_day] = 0
+            booking_day += timedelta(days=1)
 
         # Get today's date for seasonal occupancy calculation
         today_dt = datetime.today()
@@ -482,9 +563,13 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                         max_valid_advance,
                         lead_time_weights,
                         lead_time_bucket_counts,
+                        checkin_date,
+                        booking_date_counts,
+                        booking_pace_mode,
+                        seasonal_quarter_multipliers,
+                        weekday_weekend_multipliers,
                     )
                     book_date = checkin_date - timedelta(days=advance)
-                    lead_time_bucket_counts[sampled_bucket_idx] += 1
 
                     # Last-minute demand usually carries shorter stays; this keeps
                     # late pickup room nights from becoming unrealistically large.
@@ -555,6 +640,10 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                             "Revenue_Generated":   revenue,
                         })
 
+                        lead_time_bucket_counts[sampled_bucket_idx] += 1
+                        if book_date in booking_date_counts:
+                            booking_date_counts[book_date] += 1
+
                         if status == "Confirmed":
                             stay = checkin_date
                             while stay < checkout_date:
@@ -606,13 +695,19 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
     st.subheader("🔎 Lead Time & Pickup Diagnostics")
 
     if len(bookings_df) > 0:
-        diagnostics_df = bookings_df.copy()
+        diagnostics_df = bookings_df[bookings_df["Cancellation_Status"] == "Confirmed"].copy()
+
+        if len(diagnostics_df) == 0:
+            st.info("All generated bookings are cancelled, so confirmed-pickup diagnostics are unavailable.")
+        
         diagnostics_df["Booking_Date"] = pd.to_datetime(diagnostics_df["Booking_Date"])
         diagnostics_df["Check_in_Date"] = pd.to_datetime(diagnostics_df["Check_in_Date"])
 
         diagnostics_df["Lead_Time_Days"] = (
             diagnostics_df["Check_in_Date"] - diagnostics_df["Booking_Date"]
         ).dt.days
+
+        st.caption("Diagnostics below use confirmed bookings only.")
 
         # Realized booking-count distribution by configured lead-time buckets
         realized_bucket_counts = [0] * len(LEAD_TIME_BUCKETS)
@@ -636,6 +731,15 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
         distribution_df = pd.DataFrame(distribution_rows)
         st.markdown("**Configured vs Realized Lead-Time Mix (Bookings)**")
         st.dataframe(distribution_df, use_container_width=True, hide_index=True)
+
+        month_df = diagnostics_df.copy()
+        month_df["Booking_Month"] = month_df["Booking_Date"].dt.to_period("M").astype(str)
+        month_distribution = month_df.groupby("Booking_Month").agg(
+            Bookings=("Booking_ID", "count"),
+            Room_Nights=("Number_of_Nights", "sum"),
+        ).reset_index()
+        st.markdown("**Confirmed Bookings by Booking Month**")
+        st.dataframe(month_distribution, use_container_width=True, hide_index=True)
 
         # Pickup diagnostics by room nights and booking counts
         diagnostics_df["Room_Nights"] = diagnostics_df["Number_of_Nights"]
