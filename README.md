@@ -1,10 +1,10 @@
 # Synthetic Booking Data Generator
 
-A **Streamlit** web app that generates synthetic hotel booking data for analysis, demos, and testing. Configure date ranges, room types, occupancy, and rate plans, then export bookings, room inventory, daily rates, and market data as CSV or ZIP.
+A **Streamlit** web app that generates synthetic hotel booking data for analysis, demos, and testing. Configure date ranges, room types, occupancy, rate plans, and booking lead time, then export bookings, room inventory, daily rates, and market data as CSV or ZIP.
 
 ## Features
 
-- **Configurable parameters** — Booking and stay date ranges, occupancy (fixed or random), room types with counts and base rates (IDR), rate-plan discounts
+- **Configurable parameters** — Booking and stay date ranges, occupancy (fixed or random), room types with counts and base rates (IDR), rate-plan discounts, booking lead-time distribution
 - **Synthetic datasets** — Bookings (IDs, dates, room type, rate plan, revenue, channel, cancellation), room inventory by date, daily rates with dynamic adjustments, market data (events, competitor rates, demand index)
 - **Export** — Download all datasets as individual CSVs or a single ZIP
 
@@ -35,8 +35,11 @@ Then open the URL shown in the terminal (usually `http://localhost:8501`).
 | **Occupancy** | Fixed range (e.g. 50–80%) or random (50–95%) per day |
 | **Room Types** | Standard, Deluxe, Suite — number of rooms and base rate (IDR) each |
 | **Rate Plans** | BAR, Non-Refundable, Corporate, Promotion — discount % from base rate |
+| **Booking Lead Time** | Preset or custom bucketed distribution for how many days in advance bookings are created, including 90+ day lead times when the booking window allows it |
 
 Booking channels (Website, OTA, Direct, Walk-in) and cancellation probability are built-in; you can change them in the code if needed.
+
+Booking dates are generated from the configured lead-time distribution and then constrained to the selected booking window, so longer lead-time buckets only apply when the booking window supports them.
 
 ## Generated outputs
 

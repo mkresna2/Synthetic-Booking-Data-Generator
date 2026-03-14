@@ -7,6 +7,45 @@ import zipfile
 from PIL import Image
 
 
+LEAD_TIME_BUCKETS = [
+    ("0-3 days", 0, 3),
+    ("4-7 days", 4, 7),
+    ("8-14 days", 8, 14),
+    ("15-30 days", 15, 30),
+    ("31-60 days", 31, 60),
+    ("61-90 days", 61, 90),
+    ("91-180 days", 91, 180),
+    ("181-365 days", 181, 365),
+    ("366+ days", 366, None),
+]
+
+
+def normalize_weights(weights):
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return [1 / len(weights)] * len(weights)
+    return [weight / total_weight for weight in weights]
+
+
+def sample_advance_days(min_valid_advance, max_valid_advance, lead_time_weights):
+    valid_options = []
+    valid_weights = []
+
+    for index, (_, bucket_min, bucket_max) in enumerate(LEAD_TIME_BUCKETS):
+        effective_min = max(bucket_min, min_valid_advance)
+        effective_max = max_valid_advance if bucket_max is None else min(bucket_max, max_valid_advance)
+        if effective_min <= effective_max:
+            valid_options.append((effective_min, effective_max))
+            valid_weights.append(lead_time_weights[index])
+
+    if not valid_options:
+        return min_valid_advance
+
+    bucket_idx = int(np.random.choice(np.arange(len(valid_options)), p=normalize_weights(valid_weights)))
+    bucket_min, bucket_max = valid_options[bucket_idx]
+    return int(np.random.randint(bucket_min, bucket_max + 1))
+
+
 def get_occupancy_for_date(checkin_date, today, tier_ranges, fallback_min=50, fallback_max=80):
     """
     Calculate target occupancy percentage for a given check-in date based on
@@ -252,6 +291,47 @@ rate_plans = list(rate_plan_discounts.keys()) + ["Corporate"]
 # --- Booking Channels ---
 booking_channels = ["Website", "OTA", "Direct", "Walk-in"]
 
+# --- Booking Lead Time Distribution ---
+st.sidebar.subheader("⏳ Booking Lead Time")
+st.sidebar.caption("Choose how far in advance bookings are typically created. Long buckets are automatically limited by the booking window.")
+
+lead_time_preset = st.sidebar.selectbox(
+    "Lead Time Pattern",
+    ["Short Lead", "Balanced", "Long Lead", "Custom"],
+    index=1,
+    help="Select a preset or choose 'Custom' to define your own booking lead-time distribution"
+)
+
+lead_time_preset_weights = {
+    "Short Lead": [28, 24, 20, 14, 8, 4, 1, 1, 0],
+    "Balanced": [12, 12, 16, 18, 16, 12, 8, 4, 2],
+    "Long Lead": [3, 5, 8, 12, 18, 18, 18, 12, 6],
+}
+
+if lead_time_preset == "Custom":
+    st.sidebar.markdown("**Custom Weights**")
+    custom_lead_time_weights = []
+    default_lead_time_weights = lead_time_preset_weights["Balanced"]
+    for idx, (label, _, _) in enumerate(LEAD_TIME_BUCKETS):
+        custom_lead_time_weights.append(
+            st.sidebar.slider(
+                f"{label} weight",
+                0,
+                50,
+                default_lead_time_weights[idx],
+                key=f"lead_time_{idx}",
+            )
+        )
+    lead_time_weights = custom_lead_time_weights
+else:
+    lead_time_weights = lead_time_preset_weights[lead_time_preset]
+
+lead_time_weights = normalize_weights(lead_time_weights)
+
+st.sidebar.markdown("**Expected Lead Time Distribution:**")
+for idx, (label, _, _) in enumerate(LEAD_TIME_BUCKETS):
+    st.sidebar.progress(lead_time_weights[idx], text=f"{label}: {lead_time_weights[idx] * 100:.1f}%")
+
 # --- Stay Duration Distribution ---
 st.sidebar.subheader("🌙 Stay Duration Distribution")
 st.sidebar.caption("💡 Business hotels: 1-2 nights common | Resorts (Bali): 3-5 nights common")
@@ -282,7 +362,7 @@ else:  # Custom
     night_weights = [w1, w2, w3, w4, w5, w6, w7]
 
 # Normalize weights to sum to 1
-night_weights = [w / sum(night_weights) for w in night_weights]
+night_weights = normalize_weights(night_weights)
 
 # Show distribution preview
 st.sidebar.markdown("**Expected Distribution:**")
@@ -307,6 +387,9 @@ summary_cols[3].metric("Total Rooms", total_rooms)
 # Show tiered occupancy details for Seasonal mode
 if occ_mode == "Seasonal/Progressive" and tier_ranges:
     st.caption(f"**Seasonal Occupancy Tiers:** Now-3mo: {tier_ranges[1][0]}-{tier_ranges[1][1]}% | 4-6mo: {tier_ranges[2][0]}-{tier_ranges[2][1]}% | 7-9mo: {tier_ranges[3][0]}-{tier_ranges[3][1]}% | 10mo+: {tier_ranges[4][0]}-{tier_ranges[4][1]}%")
+
+max_booking_lead_days = max(0, (datetime.combine(checkin_end, datetime.min.time()) - datetime.combine(booking_start, datetime.min.time())).days)
+st.caption(f"**Lead Time Pattern:** {lead_time_preset} | Max supported lead time from current window: {max_booking_lead_days} days")
 
 st.markdown("**Rate Plan Discounts**")
 rp_data = [{"Rate Plan": plan, "Discount": f"{disc*100:.0f}%"} for plan, disc in rate_plan_discounts.items()]
@@ -349,18 +432,17 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                 rooms_needed = max(0, target_occupied - current_occupied)
 
                 for _ in range(rooms_needed):
-                    max_advance = min(90, (d - booking_start_dt).days)
-                    if max_advance > 0:
-                        advance = np.random.randint(1, max_advance + 1)
-                        book_date = d - timedelta(days=advance)
-                    else:
-                        book_date = booking_start_dt
-
-                    # Clamp booking date within booking window
-                    book_date = max(book_date, booking_start_dt)
-                    book_date = min(book_date, booking_end_dt)
-
                     checkin_date  = d
+                    earliest_booking_date = booking_start_dt
+                    latest_booking_date = min(booking_end_dt, checkin_date)
+                    if earliest_booking_date > latest_booking_date:
+                        continue
+
+                    min_valid_advance = max(0, (checkin_date - latest_booking_date).days)
+                    max_valid_advance = (checkin_date - earliest_booking_date).days
+                    advance = sample_advance_days(min_valid_advance, max_valid_advance, lead_time_weights)
+                    book_date = checkin_date - timedelta(days=advance)
+
                     num_nights    = int(np.random.choice([1, 2, 3, 4, 5, 6, 7], p=night_weights))
                     checkout_date = checkin_date + timedelta(days=num_nights)
 
