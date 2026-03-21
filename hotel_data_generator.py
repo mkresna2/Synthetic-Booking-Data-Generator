@@ -77,6 +77,8 @@ def sample_advance_days(
     booking_year_target_share,
     booking_year_counts,
     total_assigned_bookings,
+    booking_month_target_share=None,
+    booking_month_counts=None,
 ):
     if min_valid_advance > max_valid_advance:
         return min_valid_advance, get_lead_time_bucket_index(min_valid_advance)
@@ -123,11 +125,27 @@ def sample_advance_days(
             actual_year_share = booking_year_counts.get(booking_year, 0) / total_assigned_bookings
             year_gap = target_year_share / max(actual_year_share, 1e-6)
             year_gap = min(20.0, max(0.03, year_gap))
+
+            # Month-level balancing: corrects the systematic drift where months
+            # with many window days (Jan/Feb) overshoot their target share even
+            # with low multipliers, while high-multiplier months with fewer
+            # window days (Jul/Aug) end up under-represented.
+            if booking_month_target_share is not None and booking_month_counts is not None:
+                bm = booking_date.month
+                target_month_share = booking_month_target_share.get(bm, 0.0)
+                actual_month_share = booking_month_counts.get(bm, 0) / total_assigned_bookings
+                month_gap = target_month_share / max(actual_month_share, 1e-6)
+                month_gap = min(50.0, max(0.02, month_gap))
+            else:
+                month_gap = 1.0
         else:
             date_gap = 1.0
             year_gap = 1.0
+            month_gap = 1.0
 
-        balancing_factor = (date_gap ** 1.2) * (year_gap ** 1.4)
+        # month_gap uses a stronger exponent (2.0) so month-level imbalances
+        # are corrected aggressively while date/year exponents are kept moderate.
+        balancing_factor = (date_gap ** 1.0) * (month_gap ** 2.0) * (year_gap ** 1.2)
         candidate_weights.append(
             max(0.0000001, lead_time_factor * smoothing_factor * pace_factor * balancing_factor)
         )
@@ -698,6 +716,17 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
             year: weight / total_target_weight for year, weight in booking_year_target_weight.items()
         }
 
+        # Month-level target shares (calendar month 1-12, summed across all years
+        # in the booking window) used to correct month-level drift in sampling.
+        booking_month_target_weight = {}
+        for dt, weight in booking_date_target_weight.items():
+            m = dt.month
+            booking_month_target_weight[m] = booking_month_target_weight.get(m, 0.0) + weight
+        booking_month_target_share = {
+            m: w / total_target_weight for m, w in booking_month_target_weight.items()
+        }
+        booking_month_counts = {m: 0 for m in range(1, 13)}
+
         total_assigned_bookings = 0
 
         # Get today's date for seasonal occupancy calculation
@@ -742,6 +771,8 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                         booking_year_target_share,
                         booking_year_counts,
                         total_assigned_bookings,
+                        booking_month_target_share=booking_month_target_share,
+                        booking_month_counts=booking_month_counts,
                     )
                     book_date = checkin_date - timedelta(days=advance)
 
@@ -818,6 +849,7 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
                         if book_date in booking_date_counts:
                             booking_date_counts[book_date] += 1
                         booking_year_counts[book_date.year] = booking_year_counts.get(book_date.year, 0) + 1
+                        booking_month_counts[book_date.month] = booking_month_counts.get(book_date.month, 0) + 1
                         total_assigned_bookings += 1
 
                         if status == "Confirmed":
