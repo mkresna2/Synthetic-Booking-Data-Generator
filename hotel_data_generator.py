@@ -4,6 +4,8 @@ import numpy as np
 from datetime import datetime, timedelta
 import io
 import zipfile
+import os
+import json
 from PIL import Image
 
 
@@ -18,6 +20,24 @@ LEAD_TIME_BUCKETS = [
     ("181-365 days", 181, 365),
     ("366+ days", 366, None),
 ]
+
+DEFAULT_ROOMS = {
+    "Standard": {"count": 50, "base_rate": 900000},
+    "Deluxe":   {"count": 20, "base_rate": 1500000},
+    "Suite":    {"count": 10, "base_rate": 2500000},
+}
+
+LEAD_TIME_PRESET_WEIGHTS = {
+    "Short Lead": [28, 24, 20, 14, 8, 4, 1, 1, 0],
+    "Balanced":   [12, 12, 16, 18, 16, 12, 8, 4, 2],
+    "Long Lead":  [3,  5,  8, 12, 18, 18, 18, 12, 6],
+}
+
+DURATION_PRESET_WEIGHTS = {
+    "Business Hotel (1-2 nights common)":  [35, 30, 15, 10, 7, 2, 1],
+    "Resort/Vacation (3-5 nights common)": [10, 15, 25, 25, 15, 7, 3],
+    "Balanced (Uniform)":                  [14, 14, 14, 14, 14, 15, 15],
+}
 
 
 def normalize_weights(weights):
@@ -178,6 +198,214 @@ def get_occupancy_for_date(checkin_date, today, tier_ranges, fallback_min=50, fa
     return np.random.uniform(tier_min / 100, tier_max / 100)
 
 
+# ── Template Helpers ─────────────────────────────────────────────────────────
+
+TEMPLATES_DIR = "templates"
+
+
+def list_templates():
+    if not os.path.isdir(TEMPLATES_DIR):
+        return []
+    return sorted(f[:-5] for f in os.listdir(TEMPLATES_DIR) if f.endswith(".json"))
+
+
+def save_template(name, snapshot):
+    safe = "".join(c for c in name if c.isalnum() or c in " _-").strip()
+    if not safe:
+        raise ValueError("Template name must contain at least one alphanumeric character.")
+    os.makedirs(TEMPLATES_DIR, exist_ok=True)
+    path = os.path.join(TEMPLATES_DIR, f"{safe}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, indent=2)
+
+
+def load_template(name):
+    path = os.path.join(TEMPLATES_DIR, f"{name}.json")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def delete_template(name):
+    path = os.path.join(TEMPLATES_DIR, f"{name}.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def build_template_snapshot():
+    ss = st.session_state
+
+    lt_preset = ss.get("lead_time_preset", "Balanced")
+    if lt_preset == "Custom":
+        lt_weights = [int(ss.get(f"lead_time_{i}", 0)) for i in range(9)]
+    else:
+        lt_weights = LEAD_TIME_PRESET_WEIGHTS.get(lt_preset, LEAD_TIME_PRESET_WEIGHTS["Balanced"])
+
+    dur_preset = ss.get("duration_preset", "Business Hotel (1-2 nights common)")
+    if dur_preset == "Custom":
+        dur_weights = [int(ss.get(k, 0)) for k in ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]]
+    else:
+        dur_weights = DURATION_PRESET_WEIGHTS.get(dur_preset, DURATION_PRESET_WEIGHTS["Business Hotel (1-2 nights common)"])
+
+    pace_mode = ss.get("booking_pace_mode", "Uniform")
+    monthly = [int(ss.get(f"pace_month_{m}", 100)) for m in range(1, 13)]
+
+    booking_start_val = ss.get("bs", datetime(2024, 1, 1).date())
+    booking_end_val   = ss.get("be", datetime.today().date())
+    checkin_start_val = ss.get("cs", datetime(2025, 1, 1).date())
+    checkin_end_val   = ss.get("ce", datetime(2026, 12, 31).date())
+
+    return {
+        "schema_version": 1,
+        "name": ss.get("_tpl_name_input", ""),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "date_ranges": {
+            "booking_start": booking_start_val.isoformat() if hasattr(booking_start_val, "isoformat") else str(booking_start_val),
+            "booking_end":   booking_end_val.isoformat()   if hasattr(booking_end_val, "isoformat")   else str(booking_end_val),
+            "checkin_start": checkin_start_val.isoformat() if hasattr(checkin_start_val, "isoformat") else str(checkin_start_val),
+            "checkin_end":   checkin_end_val.isoformat()   if hasattr(checkin_end_val, "isoformat")   else str(checkin_end_val),
+        },
+        "occupancy": {
+            "mode":        ss.get("occ_mode", "Seasonal/Progressive"),
+            "tier1":       list(ss.get("tier1", (75, 90))),
+            "tier2":       list(ss.get("tier2", (55, 75))),
+            "tier3":       list(ss.get("tier3", (40, 60))),
+            "tier4":       list(ss.get("tier4", (25, 45))),
+            "fixed_range": list(ss.get("occ_fixed_range", (50, 80))),
+        },
+        "room_types": {
+            "predefined": {
+                rt: {
+                    "count":     int(ss.get(f"cnt_{rt}",  defaults["count"])),
+                    "base_rate": int(ss.get(f"rate_{rt}", defaults["base_rate"])),
+                }
+                for rt, defaults in DEFAULT_ROOMS.items()
+            },
+            "custom": [
+                {"name": k, "count": v["count"], "base_rate": v["base_rate"]}
+                for k, v in ss.get("custom_rooms", {}).items()
+            ],
+        },
+        "rate_plans": {
+            "BAR":                    int(ss.get("disc_BAR", 0)),
+            "Non-Refundable":         int(ss.get("disc_Non-Refundable", 10)),
+            "Early Bird (> 30 days)": int(ss.get("disc_Early Bird (> 30 days)", 15)),
+            "corporate_discount_idr": int(ss.get("disc_corporate_idr", 150000)),
+            "member_discount_pct":    int(ss.get("disc_member_pct", 10)),
+        },
+        "lead_time": {
+            "preset":         lt_preset,
+            "custom_weights": lt_weights,
+        },
+        "booking_pace": {
+            "mode":                pace_mode,
+            "monthly_multipliers": monthly,
+            "weekday_multiplier":  int(ss.get("pace_weekday", 110)),
+            "weekend_multiplier":  int(ss.get("pace_weekend", 90)),
+            "annual_uplift_pct":   int(ss.get("annual_uplift", 5)),
+        },
+        "pickup_warning": {
+            "threshold_pct": int(ss.get("pickup_threshold", 25)),
+        },
+        "duration": {
+            "preset":         dur_preset,
+            "custom_weights": dur_weights,
+        },
+    }
+
+
+def apply_template_to_session(tpl):
+    from datetime import date as date_type
+
+    dr = tpl["date_ranges"]
+    st.session_state["bs"] = date_type.fromisoformat(dr["booking_start"])
+    st.session_state["be"] = date_type.fromisoformat(dr["booking_end"])
+    st.session_state["cs"] = date_type.fromisoformat(dr["checkin_start"])
+    st.session_state["ce"] = date_type.fromisoformat(dr["checkin_end"])
+
+    occ = tpl["occupancy"]
+    st.session_state["occ_mode"]        = occ["mode"]
+    st.session_state["tier1"]           = tuple(occ["tier1"])
+    st.session_state["tier2"]           = tuple(occ["tier2"])
+    st.session_state["tier3"]           = tuple(occ["tier3"])
+    st.session_state["tier4"]           = tuple(occ["tier4"])
+    st.session_state["occ_fixed_range"] = tuple(occ["fixed_range"])
+
+    for rt, vals in tpl["room_types"]["predefined"].items():
+        st.session_state[f"cnt_{rt}"]  = int(vals["count"])
+        st.session_state[f"rate_{rt}"] = int(vals["base_rate"])
+
+    st.session_state.custom_rooms = {
+        item["name"]: {"count": item["count"], "base_rate": item["base_rate"]}
+        for item in tpl["room_types"].get("custom", [])
+    }
+
+    rp = tpl["rate_plans"]
+    st.session_state["disc_BAR"]                    = rp["BAR"]
+    st.session_state["disc_Non-Refundable"]         = rp["Non-Refundable"]
+    st.session_state["disc_Early Bird (> 30 days)"] = rp["Early Bird (> 30 days)"]
+    st.session_state["disc_corporate_idr"]          = rp["corporate_discount_idr"]
+    st.session_state["disc_member_pct"]             = rp["member_discount_pct"]
+
+    lt = tpl["lead_time"]
+    st.session_state["lead_time_preset"] = lt["preset"]
+    for i, w in enumerate(lt["custom_weights"]):
+        st.session_state[f"lead_time_{i}"] = int(w)
+
+    bp = tpl["booking_pace"]
+    st.session_state["booking_pace_mode"] = bp["mode"]
+    for i, m in enumerate(bp["monthly_multipliers"], start=1):
+        st.session_state[f"pace_month_{i}"] = int(m)
+    st.session_state["pace_weekday"]  = int(bp["weekday_multiplier"])
+    st.session_state["pace_weekend"]  = int(bp["weekend_multiplier"])
+    st.session_state["annual_uplift"] = int(bp["annual_uplift_pct"])
+
+    st.session_state["pickup_threshold"] = int(tpl["pickup_warning"]["threshold_pct"])
+
+    dur = tpl["duration"]
+    st.session_state["duration_preset"] = dur["preset"]
+    for key, w in zip(["w1", "w2", "w3", "w4", "w5", "w6", "w7"], dur["custom_weights"]):
+        st.session_state[key] = int(w)
+
+
+def render_template_ui():
+    with st.sidebar.expander("💾 Templates", expanded=False):
+        templates = list_templates()
+
+        st.markdown("**Save Current Settings**")
+        tpl_name = st.text_input("Template Name", key="_tpl_name_input",
+                                 placeholder="e.g., Bali Resort Peak Season")
+        if st.button("💾 Save Template", use_container_width=True):
+            if not tpl_name.strip():
+                st.error("Please enter a template name.")
+            else:
+                try:
+                    snapshot = build_template_snapshot()
+                    save_template(tpl_name.strip(), snapshot)
+                    st.success(f"Saved '{tpl_name.strip()}'")
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+
+        if templates:
+            st.markdown("---")
+            st.markdown("**Load or Delete a Template**")
+            selected = st.selectbox("Select Template", templates, key="_tpl_select")
+            col_load, col_del = st.columns(2)
+            with col_load:
+                if st.button("📂 Load", use_container_width=True):
+                    tpl = load_template(selected)
+                    apply_template_to_session(tpl)
+                    st.rerun()
+            with col_del:
+                if st.button("🗑️ Delete", use_container_width=True):
+                    delete_template(selected)
+                    st.rerun()
+        else:
+            st.info("No saved templates yet.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 st.set_page_config(page_title="Hotel Data Generator", page_icon="🏨", layout="wide")
 
 # Logo + title as single flex row (avoids Streamlit column nesting issues)
@@ -218,6 +446,7 @@ st.markdown("Configure your hotel parameters below and generate synthetic bookin
 
 # ── Sidebar Configuration ────────────────────────────────────────────────────
 st.sidebar.header("⚙️ Configuration")
+render_template_ui()
 
 # --- Date Ranges ---
 st.sidebar.subheader("📅 Date Ranges")
@@ -241,7 +470,7 @@ if checkin_start >= checkin_end:
 
 # --- Occupancy ---
 st.sidebar.subheader("🛏️ Occupancy Settings")
-occ_mode = st.sidebar.radio("Occupancy Mode", ["Seasonal/Progressive", "Fixed Range", "Random"], horizontal=True, index=0)
+occ_mode = st.sidebar.radio("Occupancy Mode", ["Seasonal/Progressive", "Fixed Range", "Random"], horizontal=True, index=0, key="occ_mode")
 
 if occ_mode == "Seasonal/Progressive":
     st.sidebar.caption("Higher occupancy for near-term dates, decreasing for distant future")
@@ -271,7 +500,7 @@ if occ_mode == "Seasonal/Progressive":
     occ_min, occ_max = tier4_min, tier1_max
 
 elif occ_mode == "Fixed Range":
-    occ_min, occ_max = st.sidebar.slider("Occupancy Range (%)", 10, 100, (50, 80), step=5)
+    occ_min, occ_max = st.sidebar.slider("Occupancy Range (%)", 10, 100, (50, 80), step=5, key="occ_fixed_range")
     tier_ranges = None
 else:
     st.sidebar.info("Occupancy will be randomly generated between 50–95% each day.")
@@ -282,13 +511,8 @@ else:
 st.sidebar.subheader("🏠 Room Types")
 
 room_configs = {}
-default_rooms = {
-    "Standard": {"count": 50, "base_rate": 900000},
-    "Deluxe":   {"count": 20, "base_rate": 1500000},
-    "Suite":    {"count": 10, "base_rate": 2500000},
-}
 
-for room_type, defaults in default_rooms.items():
+for room_type, defaults in DEFAULT_ROOMS.items():
     with st.sidebar.expander(f"{room_type} Rooms", expanded=True):
         count = st.number_input(f"Number of {room_type} Rooms", 1, 500, defaults["count"], key=f"cnt_{room_type}")
         base_rate = st.number_input(f"Base Rate (IDR)", 100000, 10000000, defaults["base_rate"],
@@ -308,7 +532,7 @@ with st.sidebar.expander("➕ Add Custom Room Type", expanded=False):
     st.caption(f"Base Rate: **IDR {new_room_rate:,.0f}**")
 
     if st.button("Add Room Type", use_container_width=True):
-        if new_room_name and new_room_name not in default_rooms and new_room_name not in st.session_state.custom_rooms:
+        if new_room_name and new_room_name not in DEFAULT_ROOMS and new_room_name not in st.session_state.custom_rooms:
             st.session_state.custom_rooms[new_room_name] = {"count": new_room_count, "base_rate": new_room_rate}
             st.success(f"Added {new_room_name}!")
         elif not new_room_name:
@@ -389,19 +613,14 @@ lead_time_preset = st.sidebar.selectbox(
     "Lead Time Pattern",
     ["Short Lead", "Balanced", "Long Lead", "Custom"],
     index=1,
-    help="Select a preset or choose 'Custom' to define your own booking lead-time distribution"
+    help="Select a preset or choose 'Custom' to define your own booking lead-time distribution",
+    key="lead_time_preset",
 )
-
-lead_time_preset_weights = {
-    "Short Lead": [28, 24, 20, 14, 8, 4, 1, 1, 0],
-    "Balanced": [12, 12, 16, 18, 16, 12, 8, 4, 2],
-    "Long Lead": [3, 5, 8, 12, 18, 18, 18, 12, 6],
-}
 
 if lead_time_preset == "Custom":
     st.sidebar.markdown("**Custom Weights**")
     custom_lead_time_weights = []
-    default_lead_time_weights = lead_time_preset_weights["Balanced"]
+    default_lead_time_weights = LEAD_TIME_PRESET_WEIGHTS["Balanced"]
     for idx, (label, _, _) in enumerate(LEAD_TIME_BUCKETS):
         custom_lead_time_weights.append(
             st.sidebar.slider(
@@ -414,7 +633,7 @@ if lead_time_preset == "Custom":
         )
     lead_time_weights = custom_lead_time_weights
 else:
-    lead_time_weights = lead_time_preset_weights[lead_time_preset]
+    lead_time_weights = LEAD_TIME_PRESET_WEIGHTS[lead_time_preset]
 
 lead_time_weights = normalize_weights(lead_time_weights)
 
@@ -428,6 +647,7 @@ booking_pace_mode = st.sidebar.selectbox(
     ["Uniform", "Seasonal (Monthly Repeating)", "Weekday/Weekend"],
     index=0,
     help="Controls how booking dates are spread across the full booking window after lead-time selection.",
+    key="booking_pace_mode",
 )
 
 seasonal_month_multipliers = {month_idx: 1.0 for month_idx in range(1, 13)}
@@ -449,8 +669,8 @@ if booking_pace_mode == "Seasonal (Monthly Repeating)":
             ) / 100.0
 elif booking_pace_mode == "Weekday/Weekend":
     st.sidebar.caption("Set relative booking activity by booking day type (100% = neutral).")
-    weekday_mult = st.sidebar.slider("Weekday Multiplier (%)", 50, 200, 110, step=5)
-    weekend_mult = st.sidebar.slider("Weekend Multiplier (%)", 50, 200, 90, step=5)
+    weekday_mult = st.sidebar.slider("Weekday Multiplier (%)", 50, 200, 110, step=5, key="pace_weekday")
+    weekend_mult = st.sidebar.slider("Weekend Multiplier (%)", 50, 200, 90, step=5, key="pace_weekend")
     weekday_weekend_multipliers = {
         "weekday": weekday_mult / 100.0,
         "weekend": weekend_mult / 100.0,
@@ -463,6 +683,7 @@ annual_pickup_uplift_pct = st.sidebar.slider(
     5,
     step=1,
     help="Applies a gradual uplift to later booking years while keeping the same monthly/weekday pattern.",
+    key="annual_uplift",
 )
 
 booking_base_year = booking_start.year
@@ -474,6 +695,7 @@ last_7_pickup_share_threshold = st.sidebar.slider(
     25,
     step=1,
     help="Show a warning when room-night pickup from bookings made 0-7 days before arrival exceeds this share of total room nights.",
+    key="pickup_threshold",
 )
 
 # --- Stay Duration Distribution ---
@@ -484,16 +706,12 @@ duration_preset = st.sidebar.selectbox(
     "Duration Pattern",
     ["Business Hotel (1-2 nights common)", "Resort/Vacation (3-5 nights common)", "Balanced (Uniform)", "Custom"],
     index=0,
-    help="Select a preset or choose 'Custom' to define your own distribution"
+    help="Select a preset or choose 'Custom' to define your own distribution",
+    key="duration_preset",
 )
 
-# Default weights (Business Hotel pattern)
-if duration_preset == "Business Hotel (1-2 nights common)":
-    night_weights = [35, 30, 15, 10, 7, 2, 1]  # 1-7 nights
-elif duration_preset == "Resort/Vacation (3-5 nights common)":
-    night_weights = [10, 15, 25, 25, 15, 7, 3]  # 1-7 nights
-elif duration_preset == "Balanced (Uniform)":
-    night_weights = [14, 14, 14, 14, 14, 15, 15]  # roughly uniform
+if duration_preset in DURATION_PRESET_WEIGHTS:
+    night_weights = DURATION_PRESET_WEIGHTS[duration_preset]
 else:  # Custom
     st.sidebar.markdown("**Custom Weights (1-7 nights)**")
     w1 = st.sidebar.slider("1 night weight", 0, 50, 35, key="w1")
