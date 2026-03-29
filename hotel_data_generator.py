@@ -418,8 +418,7 @@ def render_template_ui():
             col_load, col_del = st.columns(2)
             with col_load:
                 if st.button("📂 Load", use_container_width=True):
-                    tpl = load_template(selected)
-                    apply_template_to_session(tpl)
+                    st.session_state["_pending_template"] = load_template(selected)
                     st.rerun()
             with col_del:
                 if st.button("🗑️ Delete", use_container_width=True):
@@ -432,6 +431,11 @@ def render_template_ui():
 # ─────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Hotel Data Generator", page_icon="🏨", layout="wide")
+
+# Apply a pending template load before any widgets render.
+# (Session state for widget keys must be set before the widget is instantiated.)
+if "_pending_template" in st.session_state:
+    apply_template_to_session(st.session_state.pop("_pending_template"))
 
 # Logo + title as single flex row (avoids Streamlit column nesting issues)
 LOGO_HEIGHT_PX = 32
