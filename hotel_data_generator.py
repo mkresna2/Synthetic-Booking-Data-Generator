@@ -156,7 +156,12 @@ def sample_advance_days(
     return sampled_advance, get_lead_time_bucket_index(sampled_advance)
 
 
-def get_occupancy_for_date(checkin_date, today, tier_ranges, fallback_min=50, fallback_max=80):
+def get_occupancy_for_date(
+    checkin_date, today, tier_ranges, fallback_min=50, fallback_max=80,
+    dow_multipliers=None,
+    slow_day_prob=0.0, slow_day_min=10, slow_day_max=20,
+    peak_day_prob=0.0, peak_day_min=80, peak_day_max=95,
+):
     """
     Calculate target occupancy percentage for a given check-in date based on
     seasonal/progressive tiers. Higher occupancy for near-term dates,
@@ -169,33 +174,53 @@ def get_occupancy_for_date(checkin_date, today, tier_ranges, fallback_min=50, fa
     - Tier 4: Months 10-12 from now (Lowest occupancy)
     - Past dates: Use Tier 1 ranges
     - Beyond 12 months: Use Tier 4 ranges
+
+    Optional daily demand variation:
+    - dow_multipliers: dict {weekday: multiplier} (0=Mon, 6=Sun) shifts occupancy up/down by day
+    - slow_day_prob/peak_day_prob: probability of a day being a demand outlier
+    - slow/peak day ranges: occupancy bounds for those outlier days
     """
+    # Randomly classify this day as slow, peak, or normal
+    rand_val = np.random.random()
+    if rand_val < slow_day_prob:
+        return np.random.uniform(slow_day_min / 100, slow_day_max / 100)
+    elif rand_val < slow_day_prob + peak_day_prob:
+        return np.random.uniform(peak_day_min / 100, peak_day_max / 100)
+
+    # Normal occupancy from tier or fallback
     if tier_ranges is None:
-        # Fallback to fixed range if tier_ranges not provided
-        return np.random.uniform(fallback_min / 100, fallback_max / 100)
-
-    # Calculate months difference from today
-    months_diff = (checkin_date.year - today.year) * 12 + (checkin_date.month - today.month)
-
-    # Determine which tier to use
-    if months_diff < 0:
-        # Past dates - use Tier 1 (high occupancy as they're "certain")
-        tier = 1
-    elif months_diff <= 3:
-        # Current month + next 3 months
-        tier = 1
-    elif months_diff <= 6:
-        # Months 4-6
-        tier = 2
-    elif months_diff <= 9:
-        # Months 7-9
-        tier = 3
+        base_occ = np.random.uniform(fallback_min / 100, fallback_max / 100)
     else:
-        # Months 10+ (including beyond 12 months)
-        tier = 4
+        # Calculate months difference from today
+        months_diff = (checkin_date.year - today.year) * 12 + (checkin_date.month - today.month)
 
-    tier_min, tier_max = tier_ranges[tier]
-    return np.random.uniform(tier_min / 100, tier_max / 100)
+        # Determine which tier to use
+        if months_diff < 0:
+            # Past dates - use Tier 1 (high occupancy as they're "certain")
+            tier = 1
+        elif months_diff <= 3:
+            # Current month + next 3 months
+            tier = 1
+        elif months_diff <= 6:
+            # Months 4-6
+            tier = 2
+        elif months_diff <= 9:
+            # Months 7-9
+            tier = 3
+        else:
+            # Months 10+ (including beyond 12 months)
+            tier = 4
+
+        tier_min, tier_max = tier_ranges[tier]
+        base_occ = np.random.uniform(tier_min / 100, tier_max / 100)
+
+    # Apply day-of-week multiplier (business hotel: high weekday; resort: high weekend)
+    if dow_multipliers is not None:
+        dow = checkin_date.weekday()  # 0=Mon, 6=Sun
+        dow_mult = dow_multipliers.get(dow, 1.0)
+        base_occ = float(np.clip(base_occ * dow_mult, 0.05, 0.98))
+
+    return base_occ
 
 
 # ── Template Helpers ─────────────────────────────────────────────────────────
@@ -506,6 +531,77 @@ else:
     st.sidebar.info("Occupancy will be randomly generated between 50–95% each day.")
     occ_min, occ_max = 50, 95
     tier_ranges = None
+
+# --- Daily Demand Pattern ---
+_DOW_PRESETS = {
+    "None": None,
+    "Business": {0: 1.25, 1: 1.30, 2: 1.30, 3: 1.25, 4: 0.90, 5: 0.55, 6: 0.65},
+    "Resort/Leisure": {0: 0.65, 1: 0.62, 2: 0.65, 3: 0.68, 4: 1.05, 5: 1.35, 6: 1.25},
+    "Mixed/Urban": {0: 1.00, 1: 1.05, 2: 1.05, 3: 1.00, 4: 1.10, 5: 1.05, 6: 0.90},
+}
+_VARIABILITY_PRESETS = {
+    "Smooth":   {"slow_prob": 0.00, "peak_prob": 0.00, "slow_min": 10, "slow_max": 20, "peak_min": 80, "peak_max": 95},
+    "Moderate": {"slow_prob": 0.10, "peak_prob": 0.12, "slow_min": 10, "slow_max": 25, "peak_min": 75, "peak_max": 92},
+    "High":     {"slow_prob": 0.20, "peak_prob": 0.22, "slow_min":  5, "slow_max": 20, "peak_min": 80, "peak_max": 95},
+}
+
+with st.sidebar.expander("📅 Daily Demand Pattern", expanded=False):
+    st.caption("Simulate realistic day-to-day occupancy swings — from quiet nights to sold-out peaks.")
+
+    hotel_type_preset = st.radio(
+        "Hotel Type",
+        ["None", "Business", "Resort/Leisure", "Mixed/Urban", "Custom"],
+        horizontal=True, index=0, key="hotel_type_preset",
+        help="Shifts occupancy up/down by day of week based on typical hotel demand patterns.",
+    )
+
+    if hotel_type_preset == "Custom":
+        st.caption("Set a multiplier for each day (1.0 = no change from base occupancy).")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            _mon = st.slider("Mon", 0.10, 2.0, 1.0, 0.05, key="dow_mon")
+            _tue = st.slider("Tue", 0.10, 2.0, 1.0, 0.05, key="dow_tue")
+            _wed = st.slider("Wed", 0.10, 2.0, 1.0, 0.05, key="dow_wed")
+            _thu = st.slider("Thu", 0.10, 2.0, 1.0, 0.05, key="dow_thu")
+        with col_b:
+            _fri = st.slider("Fri", 0.10, 2.0, 1.0, 0.05, key="dow_fri")
+            _sat = st.slider("Sat", 0.10, 2.0, 1.0, 0.05, key="dow_sat")
+            _sun = st.slider("Sun", 0.10, 2.0, 1.0, 0.05, key="dow_sun")
+        dow_multipliers = {0: _mon, 1: _tue, 2: _wed, 3: _thu, 4: _fri, 5: _sat, 6: _sun}
+    else:
+        dow_multipliers = _DOW_PRESETS[hotel_type_preset]
+        if dow_multipliers is not None:
+            _day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+            st.caption("Multipliers: " + "  |  ".join(
+                f"{d} **{dow_multipliers[i]:.2f}×**" for i, d in enumerate(_day_labels)
+            ))
+
+    st.markdown("---")
+    variability_preset = st.radio(
+        "Daily Demand Variability",
+        ["Smooth", "Moderate", "High", "Custom"],
+        horizontal=True, index=0, key="variability_preset",
+        help="Smooth = steady occupancy. High = some days 10–20%, others 80–95%.",
+    )
+
+    if variability_preset == "Custom":
+        slow_day_prob = st.slider("Slow Day Probability (%)", 0, 40, 10, 1, key="slow_prob") / 100
+        peak_day_prob = st.slider("Peak Day Probability (%)", 0, 40, 10, 1, key="peak_prob") / 100
+        slow_day_min, slow_day_max = st.slider("Slow Day Occupancy Range (%)", 5, 40, (10, 20), 1, key="slow_range")
+        peak_day_min, peak_day_max = st.slider("Peak Day Occupancy Range (%)", 60, 98, (80, 95), 1, key="peak_range")
+    else:
+        _vp = _VARIABILITY_PRESETS[variability_preset]
+        slow_day_prob  = _vp["slow_prob"]
+        peak_day_prob  = _vp["peak_prob"]
+        slow_day_min   = _vp["slow_min"]
+        slow_day_max   = _vp["slow_max"]
+        peak_day_min   = _vp["peak_min"]
+        peak_day_max   = _vp["peak_max"]
+        if variability_preset != "Smooth":
+            st.caption(
+                f"~{slow_day_prob*100:.0f}% slow days ({slow_day_min}–{slow_day_max}%) | "
+                f"~{peak_day_prob*100:.0f}% peak days ({peak_day_min}–{peak_day_max}%)"
+            )
 
 # --- Room Types ---
 st.sidebar.subheader("🏠 Room Types")
@@ -829,7 +925,12 @@ if st.button("🚀 Generate Hotel Data", type="primary", use_container_width=Tru
         while d <= checkin_end_dt:
             for room_type, details in room_configs.items():
                 total = details["total"]
-                target_pct = get_occupancy_for_date(d, today_dt, tier_ranges, occ_min, occ_max)
+                target_pct = get_occupancy_for_date(
+                    d, today_dt, tier_ranges, occ_min, occ_max,
+                    dow_multipliers=dow_multipliers,
+                    slow_day_prob=slow_day_prob, slow_day_min=slow_day_min, slow_day_max=slow_day_max,
+                    peak_day_prob=peak_day_prob, peak_day_min=peak_day_min, peak_day_max=peak_day_max,
+                )
                 target_occupied = int(total * target_pct)
                 current_occupied = occupancy_tracker[d][room_type]
                 rooms_needed = max(0, target_occupied - current_occupied)
