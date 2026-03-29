@@ -396,6 +396,7 @@ def render_template_ui():
     with st.sidebar.expander("💾 Templates", expanded=False):
         templates = list_templates()
 
+        # ── Save ─────────────────────────────────────────────────────────────
         st.markdown("**Save Current Settings**")
         tpl_name = st.text_input("Template Name", key="_tpl_name_input",
                                  placeholder="e.g., Bali Resort Peak Season")
@@ -406,15 +407,47 @@ def render_template_ui():
                 try:
                     snapshot = build_template_snapshot()
                     save_template(tpl_name.strip(), snapshot)
-                    st.success(f"Saved '{tpl_name.strip()}'")
+                    st.session_state["_last_saved_tpl"] = tpl_name.strip()
                     st.rerun()
                 except ValueError as e:
                     st.error(str(e))
 
+        # Show download button for the most recently saved template so the
+        # user can back it up (needed on Streamlit Cloud where the filesystem
+        # is wiped on every restart).
+        last_saved = st.session_state.get("_last_saved_tpl")
+        if last_saved and os.path.exists(os.path.join(TEMPLATES_DIR, f"{last_saved}.json")):
+            with open(os.path.join(TEMPLATES_DIR, f"{last_saved}.json"), "r", encoding="utf-8") as f:
+                tpl_json = f.read()
+            st.download_button(
+                f"⬇️ Download '{last_saved}'",
+                data=tpl_json,
+                file_name=f"{last_saved}.json",
+                mime="application/json",
+                use_container_width=True,
+                key="_tpl_download_last",
+            )
+
+        # ── Load / Delete ─────────────────────────────────────────────────────
         if templates:
             st.markdown("---")
             st.markdown("**Load or Delete a Template**")
             selected = st.selectbox("Select Template", templates, key="_tpl_select")
+
+            # Per-template download so any saved template can be exported
+            tpl_path = os.path.join(TEMPLATES_DIR, f"{selected}.json")
+            if os.path.exists(tpl_path):
+                with open(tpl_path, "r", encoding="utf-8") as f:
+                    sel_json = f.read()
+                st.download_button(
+                    "⬇️ Export",
+                    data=sel_json,
+                    file_name=f"{selected}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                    key="_tpl_export_selected",
+                )
+
             col_load, col_del = st.columns(2)
             with col_load:
                 if st.button("📂 Load", use_container_width=True):
@@ -422,10 +455,34 @@ def render_template_ui():
                     st.rerun()
             with col_del:
                 if st.button("🗑️ Delete", use_container_width=True):
+                    if last_saved == selected:
+                        del st.session_state["_last_saved_tpl"]
                     delete_template(selected)
                     st.rerun()
         else:
             st.info("No saved templates yet.")
+
+        # ── Import ────────────────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("**Import Template**")
+        st.caption("Upload a previously exported .json template file to restore it.")
+        uploaded = st.file_uploader(
+            "Choose template file",
+            type=["json"],
+            key="_tpl_upload",
+            label_visibility="collapsed",
+        )
+        if uploaded is not None:
+            try:
+                tpl_data = json.loads(uploaded.read().decode("utf-8"))
+                import_name = tpl_data.get("name") or uploaded.name.removesuffix(".json")
+                if not import_name.strip():
+                    import_name = uploaded.name.removesuffix(".json")
+                save_template(import_name.strip(), tpl_data)
+                st.success(f"Imported '{import_name.strip()}'")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Import failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
