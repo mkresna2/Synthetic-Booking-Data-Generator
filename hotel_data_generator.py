@@ -471,7 +471,6 @@ st.markdown("Configure your hotel parameters below and generate synthetic bookin
 
 # ── Sidebar Configuration ────────────────────────────────────────────────────
 st.sidebar.header("⚙️ Configuration")
-render_template_ui()
 
 # --- Date Ranges ---
 st.sidebar.subheader("📅 Date Ranges")
@@ -826,6 +825,10 @@ night_weights = normalize_weights(night_weights)
 st.sidebar.markdown("**Expected Distribution:**")
 for i, pct in enumerate(night_weights, 1):
     st.sidebar.progress(pct, text=f"{i} night{'s' if i > 1 else ''}: {pct*100:.1f}%")
+
+# Templates UI — placed at the end of the sidebar so build_template_snapshot()
+# reads session state AFTER all widgets have rendered and updated their values.
+render_template_ui()
 
 # ── Main Area: Preview & Generate ────────────────────────────────────────────
 st.subheader("📊 Configuration Summary")
